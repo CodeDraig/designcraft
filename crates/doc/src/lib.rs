@@ -9,6 +9,20 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod settings;
+pub use settings::{AdvancedType, BaselineGrid, BlendSpace, DocSettings, DocumentGrid, GridRelative, Intent};
+mod inks;
+pub use inks::InkManager;
+mod xml;
+pub use xml::{XmlSettings, XmlTag};
+mod navigation;
+pub use navigation::{Bookmark, Hyperlink, HyperlinkDest, HyperlinkSource, Toc, TocEntry};
+mod layers;
+use layers::yes;
+pub use layers::{LAYER_COLORS, Layer};
+mod assets;
+pub use assets::Asset;
+
 pub mod anchored;
 pub mod arabic;
 pub mod arrow;
@@ -58,7 +72,6 @@ pub use table::*;
 pub use xref::{ANCHOR_MARK, CrossRef, TextAnchor, XREF_MARK, XrefFormat};
 
 use designcraft_color::Swatch;
-use designcraft_geom::Unit;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -80,66 +93,6 @@ pub type Result<T> = std::result::Result<T, DocError>;
 /// Largest `next_id` a valid document has (ids count up from it; 2^53 also stays exact in JSON
 /// readers that use doubles).
 pub const MAX_NEXT_ID: u64 = 1 << 53;
-
-/// Edit › Transparency Blend Space: the colour space transparency is flattened in (CMYK for
-/// print documents, RGB for screen ones, as InDesign defaults).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BlendSpace {
-    #[default]
-    Cmyk,
-    Rgb,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Intent {
-    #[default]
-    Print,
-    Web,
-    Mobile,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum GridRelative {
-    #[default]
-    TopOfPage,
-    TopMargin,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct BaselineGrid {
-    pub start: f64,
-    pub increment: f64,
-    pub relative_to: GridRelative,
-    pub color: [u8; 3],
-    /// Hidden below this zoom (1.0 = 100%).
-    pub view_threshold: f64,
-}
-
-impl Default for BaselineGrid {
-    fn default() -> Self {
-        BaselineGrid { start: 36.0, increment: 12.0, relative_to: GridRelative::TopOfPage, color: [140, 205, 230], view_threshold: 0.75 }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DocumentGrid {
-    pub horizontal: f64,
-    pub vertical: f64,
-    pub subdivisions: u32,
-    pub color: [u8; 3],
-    pub in_back: bool,
-}
-
-impl Default for DocumentGrid {
-    fn default() -> Self {
-        DocumentGrid { horizontal: 72.0, vertical: 72.0, subdivisions: 8, color: [200, 200, 200], in_back: true }
-    }
-}
 
 /// A named numbered list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -210,63 +163,6 @@ impl Document {
     }
 }
 
-/// Ink Manager settings for output.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct InkManager {
-    /// All Spots to Process.
-    pub all_to_process: bool,
-    /// Spot inks converted to process one by one.
-    pub to_process: Vec<String>,
-    /// Ink Alias: (spot ink, the ink it prints on).
-    pub aliases: Vec<(String, String)>,
-}
-
-impl InkManager {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-
-    /// The ink a spot swatch prints on (after aliases; at most a few hops) and whether it's
-    /// converted to process.
-    pub fn resolve<'a>(&'a self, ink: &'a str) -> (&'a str, bool) {
-        let mut n = ink;
-        for _ in 0..8 {
-            match self.aliases.iter().find(|(a, _)| a == n) {
-                Some((_, to)) if to != n => n = to,
-                _ => break,
-            }
-        }
-        (n, self.all_to_process || self.to_process.iter().any(|x| x == n))
-    }
-}
-
-/// XML tags and mappings.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct XmlSettings {
-    pub root: String,
-    pub tags: Vec<XmlTag>,
-    /// Paragraph style → tag: tagged frames' paragraphs become elements of that name.
-    pub style_map: Vec<(String, String)>,
-    /// The loaded Document Type Definition (its text), for validation.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub dtd: String,
-}
-
-impl XmlSettings {
-    pub fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.style_map.is_empty() && self.root.is_empty() && self.dtd.is_empty()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct XmlTag {
-    pub name: String,
-    pub color: [u8; 3],
-}
-
 /// An article: objects in reading order; `export` includes it when exporting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,176 +179,6 @@ pub struct Article {
 pub struct ColorGroup {
     pub name: String,
     pub swatches: Vec<String>,
-}
-
-/// Preferences › Advanced Type (stored with the document, like InDesign).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct AdvancedType {
-    pub superscript_size: f64,
-    pub superscript_position: f64,
-    pub subscript_size: f64,
-    pub subscript_position: f64,
-}
-
-impl Default for AdvancedType {
-    fn default() -> Self {
-        AdvancedType { superscript_size: 58.3, superscript_position: 33.3, subscript_size: 58.3, subscript_position: 33.3 }
-    }
-}
-
-/// File → Document Setup + the guide/grid/unit preferences stored with the document.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DocSettings {
-    pub intent: Intent,
-    pub page_width: f64,
-    pub page_height: f64,
-    pub facing_pages: bool,
-    /// Binding: Right to Left — page 1 is a left page and spreads read from right to left.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub right_to_left_binding: bool,
-    pub primary_text_frame: bool,
-    /// Bleed: top, bottom, inside, outside.
-    pub bleed: [f64; 4],
-    pub slug: [f64; 4],
-    pub horizontal_units: Unit,
-    pub vertical_units: Unit,
-    pub baseline_grid: BaselineGrid,
-    pub grid: DocumentGrid,
-    /// Pasteboard extent around spreads (horizontal, vertical).
-    pub pasteboard: (f64, f64),
-    pub margin_color: [u8; 3],
-    pub column_color: [u8; 3],
-    pub bleed_color: [u8; 3],
-    pub slug_color: [u8; 3],
-    pub keyboard_increment: f64,
-    /// Named lists (Type › Bulleted and Numbered Lists › Define Lists).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lists: Vec<NumberedList>,
-    /// The story in the primary text frames (Smart Text Reflow adds and removes pages for it).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_story: Option<StoryId>,
-    /// Chapter number (Numbering & Section Options › Document Chapter Numbering).
-    pub chapter_number: u32,
-    /// Object › Effects › Global Light: the angle (degrees) shadows that use it share.
-    pub global_light: f64,
-    /// Preferences › Advanced Type: superscript and subscript size and position (percent of the
-    /// font size).
-    pub advanced_type: AdvancedType,
-    /// Edit › Transparency Blend Space.
-    pub blend_space: BlendSpace,
-    /// Preferences › Appearance of Black: [Black] at 100% overprints (Overprint Preview, output).
-    pub overprint_black: bool,
-    /// Type › Track Changes: edits are recorded as inserted / deleted text.
-    pub track_changes: bool,
-    /// Preferences › Composition › Draw Missing Glyphs from Fallback Fonts: characters the
-    /// applied font lacks are drawn from other fonts. Off (InDesign's behaviour, and new
-    /// documents'), they are drawn as the font's missing-glyph box and Preflight lists them.
-    /// Documents saved before the setting existed read as on, the way they were drawn.
-    #[serde(default = "yes")]
-    pub glyph_fallback: bool,
-}
-
-impl Default for DocSettings {
-    fn default() -> Self {
-        DocSettings {
-            intent: Intent::Print,
-            page_width: 612.0,
-            page_height: 792.0,
-            facing_pages: true,
-            right_to_left_binding: false,
-            primary_text_frame: false,
-            bleed: [0.0; 4],
-            slug: [0.0; 4],
-            horizontal_units: Unit::Picas,
-            vertical_units: Unit::Picas,
-            baseline_grid: BaselineGrid::default(),
-            grid: DocumentGrid::default(),
-            pasteboard: (72.0, 72.0),
-            margin_color: [255, 56, 255],
-            column_color: [166, 40, 255],
-            bleed_color: [255, 72, 103],
-            slug_color: [100, 188, 221],
-            keyboard_increment: 1.0,
-            primary_story: None,
-            lists: Vec::new(),
-            chapter_number: 1,
-            global_light: 120.0,
-            advanced_type: AdvancedType::default(),
-            blend_space: BlendSpace::Cmyk,
-            overprint_black: true,
-            track_changes: false,
-            glyph_fallback: false,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Layer {
-    pub id: LayerId,
-    pub name: String,
-    /// Selection / frame-edge colour.
-    pub color: [u8; 3],
-    #[serde(default = "yes")]
-    pub visible: bool,
-    #[serde(default)]
-    pub locked: bool,
-    #[serde(default = "yes")]
-    pub printable: bool,
-    #[serde(default = "yes")]
-    pub show_guides: bool,
-    #[serde(default)]
-    pub suppress_wrap_when_hidden: bool,
-}
-
-fn yes() -> bool {
-    true
-}
-
-/// InDesign's layer colour sequence (names are the conventional colour names).
-pub const LAYER_COLORS: &[(&str, [u8; 3])] = &[
-    ("Light Blue", [43, 155, 255]),
-    ("Red", [255, 0, 0]),
-    ("Green", [79, 255, 79]),
-    ("Blue", [0, 0, 255]),
-    ("Yellow", [255, 255, 79]),
-    ("Magenta", [255, 79, 255]),
-    ("Cyan", [0, 255, 255]),
-    ("Gray", [128, 128, 128]),
-    ("Black", [0, 0, 0]),
-    ("Orange", [255, 102, 0]),
-    ("Dark Green", [0, 84, 0]),
-    ("Teal", [0, 153, 153]),
-    ("Tan", [204, 153, 102]),
-    ("Brown", [153, 51, 0]),
-    ("Violet", [153, 51, 255]),
-    ("Gold", [255, 153, 0]),
-];
-
-/// An embedded file (placed image / PDF). Bytes are stored next to the JSON in the native format.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Asset {
-    pub id: AssetId,
-    pub name: String,
-    pub mime: String,
-    /// Original location on disk (Links panel), if linked.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<String>,
-    #[serde(skip)]
-    pub data: Arc<Vec<u8>>,
-    /// Pixel size for raster images.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pixels: Option<(u32, u32)>,
-    /// The page shown from a multi-page PDF (0-based; Image Import Options).
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub page: u32,
-}
-
-fn is_zero(v: &u32) -> bool {
-    *v == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -536,67 +262,6 @@ pub struct Document {
     /// saved.
     #[serde(skip)]
     pub font_scope: u32,
-}
-
-/// What a hyperlink is attached to.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum HyperlinkSource {
-    Item { id: ItemId },
-    Text { story: StoryId, start: usize, end: usize },
-}
-
-/// Where a hyperlink goes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
-pub enum HyperlinkDest {
-    Url(String),
-    Email(String),
-    /// Absolute page index.
-    Page(usize),
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Hyperlink {
-    pub id: u64,
-    pub name: String,
-    pub source: HyperlinkSource,
-    pub dest: HyperlinkDest,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TocEntry {
-    /// Paragraph style whose paragraphs are listed.
-    pub style: String,
-    /// 1-based nesting level.
-    #[serde(default = "one")]
-    pub level: u8,
-}
-
-fn one() -> u8 {
-    1
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Toc {
-    pub story: StoryId,
-    pub title: String,
-    pub entries: Vec<TocEntry>,
-    #[serde(default)]
-    pub page_numbers: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Bookmark {
-    pub name: String,
-    /// Absolute page index.
-    pub page: usize,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<Bookmark>,
 }
 
 impl Document {

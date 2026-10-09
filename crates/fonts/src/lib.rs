@@ -24,7 +24,7 @@ pub use kurbo::BezPath;
 use skrifa::MetadataProvider;
 use skrifa::instance::Size;
 
-/// A font from the optional craft-fonts build input (https://github.com/storytold/craft-fonts;
+/// A font from the optional craft-fonts build input (<https://github.com/storytold/craft-fonts>;
 /// empty unless built with `CRAFT_FONTS_DIR`, see `build.rs`).
 pub struct CraftFont {
     pub family: &'static str,

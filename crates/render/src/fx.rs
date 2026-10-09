@@ -31,7 +31,7 @@ pub(crate) fn offset(angle: f64, distance: f64) -> Vec2 {
 }
 
 /// How far (points) the effects of `it` reach outside its geometry.
-pub(crate) fn outset(it: &Item) -> f64 {
+pub fn effect_outset(it: &Item) -> f64 {
     let e = &it.effects;
     let mut o: f64 = 0.0;
     if e.drop_shadow.on {

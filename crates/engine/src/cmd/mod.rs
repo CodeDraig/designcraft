@@ -115,7 +115,7 @@ pub fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 /// Why [`has_selection`] disables a command. A command that documents `ids` still runs when the
-/// call names its objects (see [`named_targets`]).
+/// call names its objects (see `named_targets`).
 pub const NOTHING_SELECTED: &str = "nothing selected";
 pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;

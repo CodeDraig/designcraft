@@ -7,6 +7,12 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod document_state;
+pub use document_state::{DocState, FontScope, History, HistoryEntry, Interaction};
+mod preferences;
+pub use preferences::{Prefs, default_autocorrect};
+mod reflow;
+
 pub mod cmd;
 pub mod dtd;
 pub mod guard;
@@ -53,196 +59,6 @@ impl From<designcraft_doc::DocError> for EngineError {
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
-
-#[derive(Clone, Debug)]
-pub struct HistoryEntry {
-    pub label: String,
-    pub doc: Arc<Document>,
-    pub selection: Selection,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct History {
-    pub undo: Vec<HistoryEntry>,
-    pub redo: Vec<HistoryEntry>,
-    pub limit: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct Interaction {
-    pub label: String,
-    pub doc: Arc<Document>,
-    pub selection: Selection,
-    pub preview: Option<(String, Value)>,
-}
-
-#[derive(Clone, Debug)]
-pub struct DocState {
-    pub doc: Arc<Document>,
-    pub selection: Selection,
-    pub history: History,
-    pub path: Option<String>,
-    pub revision: u64,
-    pub saved_revision: u64,
-    /// The document as last saved (dirty = the current document is a different allocation).
-    pub saved_doc: Arc<Document>,
-    pub active_layer: LayerId,
-    pub interaction: Option<Interaction>,
-    /// Editing parent spreads (Pages panel double-click on a parent).
-    pub editing_parents: bool,
-    pub uid: u64,
-    /// Unfilled document while data-merge preview is showing a record. Not saved.
-    pub preview_stash: Option<Arc<Document>>,
-    /// 1-based record currently previewed.
-    pub preview_record: Option<u32>,
-    /// The fonts the document brought (`doc.font_scope`), found while it is open.
-    pub fonts: Option<Arc<FontScope>>,
-}
-
-/// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
-/// found until the document's state (with every copy of it) is gone — closed, reverted, or its
-/// session ended.
-#[derive(Debug)]
-pub struct FontScope(pub u32);
-
-impl Drop for FontScope {
-    fn drop(&mut self) {
-        designcraft_fonts::FontDb::global().close_scope(self.0);
-    }
-}
-
-static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-impl DocState {
-    pub fn new(doc: Document, path: Option<String>) -> Self {
-        let active_layer = doc.default_layer();
-        let doc = Arc::new(doc);
-        DocState {
-            saved_doc: doc.clone(),
-            doc,
-            selection: Selection::default(),
-            history: History { limit: 1000, ..Default::default() },
-            path,
-            revision: 1,
-            saved_revision: 1,
-            active_layer,
-            interaction: None,
-            editing_parents: false,
-            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            preview_stash: None,
-            preview_record: None,
-            fonts: None,
-        }
-    }
-    pub fn is_dirty(&self) -> bool {
-        !Arc::ptr_eq(&self.doc, &self.saved_doc)
-    }
-    pub fn title(&self) -> String {
-        self.path
-            .as_deref()
-            .and_then(|p| std::path::Path::new(p).file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| self.doc.title.clone())
-    }
-}
-
-/// Preferences that the engine needs (UI keeps its own).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Prefs {
-    pub show_hidden_characters: bool,
-    pub typographers_quotes: bool,
-    /// Polygon Settings (double-click the Polygon tool): number of sides, star inset (0–1).
-    pub polygon_sides: u32,
-    pub star_inset: f64,
-    /// Scaling objects scales their stroke weights (Preferences › General › When Scaling).
-    pub scale_strokes: bool,
-    /// X/Y/W/H in the Control and Properties panels measure the stroke's outer edge.
-    pub dimensions_include_stroke: bool,
-    /// Preferences › General › Transformations are Totals: rotation, shear and scale of nested
-    /// objects (a graphic in a frame, objects in groups) are measured on the pasteboard rather
-    /// than relative to their container.
-    pub transformations_are_totals: bool,
-    /// Preferences › General › Page Numbering View: Absolute (1, 2, 3… from the first page) instead
-    /// of section numbering (the page names, e.g. "iv", "A-3").
-    pub absolute_page_numbers: bool,
-    /// Preferences › Composition › Highlight: H&J violations, custom tracking/kerning, substituted
-    /// fonts (screen only).
-    pub highlight_hj: bool,
-    pub highlight_keeps: bool,
-    pub highlight_custom_tracking: bool,
-    pub highlight_substituted_fonts: bool,
-    /// Preferences › Appearance of Black › Printing / Exporting: 100% K as rich (pure) black in
-    /// RGB output (PNG) instead of the accurate dark grey.
-    pub rich_black_output: bool,
-    /// Font menu favourites (family names).
-    pub favorite_fonts: Vec<String>,
-    /// Preferences › Type › Show Font Names in English: the font menus show CJK families by their
-    /// English names instead of their native ones. Documents store the English name either way.
-    pub show_font_names_in_english: bool,
-    /// Preferences › Type › Smart Text Reflow: pages follow the primary text frame's story
-    /// (added while it oversets, empty ones at the end removed).
-    pub smart_text_reflow: bool,
-    /// Preferences › Autocorrect: typing a space or punctuation after a listed word replaces it.
-    pub autocorrect: bool,
-    /// Misspelled word → correction (lowercase; the correction follows the typed capitalisation).
-    pub autocorrect_list: Vec<(String, String)>,
-    /// Preferences › Track Changes › Show: added text highlighted on screen.
-    pub show_added_text: bool,
-    /// Preferences › Notes: note anchors shown in layout view.
-    pub show_note_anchors: bool,
-    /// Preferences › File Handling: minutes between document recovery saves.
-    pub recovery_minutes: f64,
-}
-
-/// A starter autocorrect list (common English typing slips).
-pub fn default_autocorrect() -> Vec<(String, String)> {
-    [
-        ("teh", "the"),
-        ("adn", "and"),
-        ("taht", "that"),
-        ("recieve", "receive"),
-        ("seperate", "separate"),
-        ("occured", "occurred"),
-        ("untill", "until"),
-        ("wich", "which"),
-        ("becuase", "because"),
-        ("definately", "definitely"),
-        ("thier", "their"),
-        ("alot", "a lot"),
-    ]
-    .iter()
-    .map(|(a, b)| (a.to_string(), b.to_string()))
-    .collect()
-}
-
-impl Default for Prefs {
-    fn default() -> Self {
-        Prefs {
-            show_hidden_characters: false,
-            typographers_quotes: true,
-            polygon_sides: 6,
-            star_inset: 0.0,
-            scale_strokes: true,
-            dimensions_include_stroke: true,
-            transformations_are_totals: true,
-            absolute_page_numbers: false,
-            highlight_hj: false,
-            highlight_keeps: false,
-            highlight_custom_tracking: false,
-            highlight_substituted_fonts: true,
-            rich_black_output: false,
-            favorite_fonts: Vec::new(),
-            show_font_names_in_english: false,
-            smart_text_reflow: true,
-            autocorrect: false,
-            autocorrect_list: default_autocorrect(),
-            show_added_text: true,
-            show_note_anchors: true,
-            recovery_minutes: 0.5,
-        }
-    }
-}
 
 pub struct Session {
     docs: Vec<DocState>,
@@ -458,57 +274,12 @@ impl Session {
             && spec.undoable
         {
             let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection: st.selection.clone() };
-            push_undo(st, entry);
+            record_undo(st, entry);
         }
         if spec.journal {
             self.journal.push((id.to_string(), params.clone()));
         }
         Ok(r)
-    }
-
-    /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
-    /// trailing pages whose only object is an empty frame of it.
-    fn smart_reflow(&mut self) {
-        let Some(st) = self.active() else { return };
-        if st.interaction.is_some() {
-            return;
-        }
-        let Some(sid) = st.doc.settings.primary_story else { return };
-        let Some(story) = st.doc.story(sid) else { return };
-        let cs = self.cache.get(&st.doc, sid, None);
-        let overset = cs.overset_at.is_some();
-        let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
-        if !overset && !empty_tail {
-            return;
-        }
-        let mut d = (*st.doc).clone();
-        if overset {
-            let _ = cmd::place_text_autoflow(&mut d, sid, 500);
-        } else {
-            // Drop empty trailing frames on the last pages (one frame, nothing else there).
-            while let Some(story) = d.story(sid) {
-                if story.frames.len() < 2 {
-                    break;
-                }
-                let Some(&last) = story.frames.last() else { break };
-                let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
-                if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
-                    break;
-                }
-                let Some(page) = d.page_of_item(last) else { break };
-                let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).filter(|i| d.page_of_item(i.id) == Some(page)).count() == 1;
-                if page + 1 != d.page_count() || !alone || d.page_count() < 2 {
-                    break;
-                }
-                if d.remove_item(last).is_err() || d.delete_pages(&[page]).is_err() {
-                    break;
-                }
-            }
-        }
-        if let Some(st) = self.active_mut() {
-            st.doc = Arc::new(d);
-            st.revision += 1;
-        }
     }
 
     /// Remember a move/rotate/scale/shear/flip for Transform Again.
@@ -554,15 +325,13 @@ impl Session {
     }
 }
 
-fn push_undo(st: &mut DocState, e: HistoryEntry) {
+pub(crate) fn record_undo(st: &mut DocState, e: HistoryEntry) {
     st.history.undo.push(e);
     st.history.redo.clear();
     if st.history.undo.len() > st.history.limit.max(1) {
         st.history.undo.remove(0);
     }
 }
-
-pub(crate) use push_undo as record_undo;
 
 #[cfg(test)]
 mod tests;

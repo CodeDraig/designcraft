@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use designcraft_doc::{CharFormat, ParaFormat, Story, StoryId, Table};
 
-use crate::docx::{El, parse, part};
+use crate::package::part;
+use crate::xml::{El, parse};
 use crate::{ImportError, Imported};
 
 /// "B12" → (row 11, column 1).

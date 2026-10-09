@@ -140,6 +140,10 @@ current document's name and unsaved changes. The web build has no control channe
 DesignCraft is an engine-first Cargo workspace with enforced layering (`cargo xtask layers`). The
 egui frontend is a separate crate, so the UI can be swapped without touching the engine.
 
+Native `.designcraft` files use the current ZIP container and document model. Historical
+single-file JSON documents and automatic schema upgrades are not supported. IDML import uses
+per-corner options and property-element text insets.
+
 | Layer | Crates |
 |---|---|
 | L0 | `geom` (paths, units & measurement parsing, corner options) · `color` (CMYK/RGB/Lab, swatches, tints, gradients) |

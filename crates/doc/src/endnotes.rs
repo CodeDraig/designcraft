@@ -3,7 +3,7 @@
 //! An endnote reference is an [`ENDNOTE_REF`] character; the story's [`Story::endnotes`] holds one
 //! entry per reference in text order (like footnotes). Numbering runs through the document in
 //! page order. The endnote frame shows a story that is generated from every endnote: a heading
-//! and one numbered paragraph per endnote ([`Document::endnote_text`]); its text isn't typed
+//! and one numbered paragraph per endnote ([`crate::Document::endnote_text`]); its text isn't typed
 //! into, endnotes are edited through their references.
 
 use std::sync::Arc;

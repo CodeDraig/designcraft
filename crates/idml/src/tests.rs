@@ -304,7 +304,7 @@ fn inset_list(values: &[&str]) -> String {
 }
 
 #[test]
-fn imports_scalar_inset_properties_like_lists_and_attributes() {
+fn imports_scalar_inset_properties_like_lists() {
     let scalar =
         inset_fixture(r#"<TextFramePreference><Properties><InsetSpacing type="unit"> 9 </InsetSpacing></Properties></TextFramePreference>"#, "");
     let list = inset_fixture(&format!("<TextFramePreference>{}</TextFramePreference>", inset_list(&["9"; 4])), "");
@@ -312,7 +312,7 @@ fn imports_scalar_inset_properties_like_lists_and_attributes() {
     let untyped = inset_fixture(r#"<TextFramePreference><Properties><InsetSpacing>9</InsetSpacing></Properties></TextFramePreference>"#, "");
     assert_eq!(frame_inset(&scalar), [9.0; 4]);
     assert_eq!(frame_inset(&scalar), frame_inset(&list));
-    assert_eq!(frame_inset(&scalar), frame_inset(&attribute));
+    assert_eq!(frame_inset(&attribute), [0.0; 4], "obsolete scalar attributes are ignored");
     assert_eq!(frame_inset(&scalar), frame_inset(&untyped));
     assert_eq!(scalar.spreads[0].items[0].text_area(), Rect::new(9.0, 9.0, 91.0, 91.0));
     let round_trip = import_idml(&export_idml(&scalar)).unwrap();
@@ -320,7 +320,7 @@ fn imports_scalar_inset_properties_like_lists_and_attributes() {
 }
 
 #[test]
-fn inset_property_keeps_precedence_over_attribute() {
+fn inset_properties_do_not_read_obsolete_attributes() {
     for (property, expected) in [
         (r#"<Properties><InsetSpacing type="unit">9</InsetSpacing></Properties>"#.to_string(), [9.0; 4]),
         (inset_list(&["1", "2", "3", "4"]), [1.0, 2.0, 3.0, 4.0]),
@@ -342,7 +342,6 @@ fn inset_spacing_rejects_malformed_and_nonfinite_values() {
             .to_string(),
     ];
     for value in ["", "invalid", "NaN", "inf", "-inf", "1e309"] {
-        preferences.push(format!(r#"<TextFramePreference InsetSpacing="{value}"/>"#));
         preferences
             .push(format!(r#"<TextFramePreference><Properties><InsetSpacing type="unit">{value}</InsetSpacing></Properties></TextFramePreference>"#));
         preferences.push(format!("<TextFramePreference>{}</TextFramePreference>", inset_list(&["1", value, "3", "4"])));
@@ -361,7 +360,6 @@ fn inset_spacing_preserves_finite_signed_values_and_edge_order() {
     for value in ["0", "-2.5", " 4.5 "] {
         let expected = [value.trim().parse::<f64>().unwrap(); 4];
         for preference in [
-            format!(r#"<TextFramePreference InsetSpacing="{value}"/>"#),
             format!(r#"<TextFramePreference><Properties><InsetSpacing type="unit">{value}</InsetSpacing></Properties></TextFramePreference>"#),
             format!("<TextFramePreference>{}</TextFramePreference>", inset_list(&[value; 4])),
         ] {
@@ -377,7 +375,8 @@ fn imports_scalar_insets_in_object_style_without_replacing_frame_override() {
     let styles = r#"<ObjectStyle Self="ObjectStyle/Padded" Name="Padded" EnableTextFrameGeneralOptions="true">
       <TextFramePreference><Properties><InsetSpacing type="unit">9</InsetSpacing></Properties></TextFramePreference>
     </ObjectStyle>"#;
-    let d = inset_fixture(r#"<TextFramePreference InsetSpacing="3"/>"#, styles);
+    let d =
+        inset_fixture(r#"<TextFramePreference><Properties><InsetSpacing type="unit">3</InsetSpacing></Properties></TextFramePreference>"#, styles);
     assert_eq!(d.styles.object.iter().find(|s| s.name == "Padded").unwrap().text_frame.as_ref().unwrap().inset, [9.0; 4]);
     assert_eq!(frame_inset(&d), [3.0; 4]);
 }

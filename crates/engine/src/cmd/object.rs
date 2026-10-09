@@ -1,6 +1,33 @@
 //! Object creation and the Object menu: frames, lines, transforms, arrange, group, lock/hide,
 //! fill/stroke, content type, Text Frame Options, corners, fitting, text wrap.
 
+mod creation;
+pub(crate) use creation::polygon_in;
+mod appearance;
+
+mod attributes;
+
+use creation::{frame_create, line_create};
+mod duplication;
+pub use duplication::duplicate_from;
+mod transform;
+use transform::{
+    apply_about_center, clear_transformations, step_and_repeat, transform_again, transform_info, transform_move, transform_resize, transform_rotate,
+    transform_set,
+};
+pub(crate) use transform::{bake, scale_item};
+mod arrangement;
+pub(crate) use arrangement::RemoveKeep;
+use arrangement::{align, all_flag, arrange, distribute, group, set_flag, ungroup};
+mod text_frames;
+use text_frames::{content_type, text_frame_options};
+mod gaps;
+use gaps::gap_move;
+mod fitting;
+use fitting::{clipping_path, fit, fitting_options};
+mod paths;
+use paths::{path_append, path_close, path_create, path_move_anchors};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -36,25 +63,15 @@ pub fn specs() -> Vec<CommandSpec> {
             transform_resize
         ),
         cmd!("transform.rotate", "Rotate", ["Object", "Transform"], None, "{angle (degrees, CCW), ids?}", has_selection, transform_rotate),
-        cmd!("transform.scale", "Scale", ["Object", "Transform"], None, "{sx, sy, ids?} (about the selection centre)", has_selection, |s, p| {
-            let sx = f64_or(p, "sx", 1.0);
-            let sy = f64_or(p, "sy", sx);
-            if sx.abs() < 1e-4 || sy.abs() < 1e-4 {
-                return Err(bad("transform.scale", "scale too small"));
-            }
-            let strokes = s.prefs.scale_strokes;
-            let ids = targets(s, p)?;
-            s.edit(|d, _| {
-                let c = union_bounds(d, &ids).center();
-                let m = Affine::translate(c.to_vec2()) * Affine::scale_non_uniform(sx, sy) * Affine::translate(-c.to_vec2());
-                for id in &ids {
-                    if let Some(it) = d.item_mut(*id) {
-                        scale_item(it, m, (sx * sy).abs().sqrt(), strokes);
-                    }
-                }
-                ok()
-            })
-        }),
+        cmd!(
+            "transform.scale",
+            "Scale",
+            ["Object", "Transform"],
+            None,
+            "{sx, sy, ids?} (about the selection centre)",
+            has_selection,
+            transform::transform_scale
+        ),
         cmd!(
             "transform.again",
             "Transform Again",
@@ -84,26 +101,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{from: id, ids?} — copy fill, stroke, corners, opacity, effects, wrap",
             has_selection,
-            |s, p| {
-                let from = super::id_param(p, "from").ok_or_else(|| bad("object.matchAttributes", "missing from"))?;
-                let src = s.doc()?.doc.item(from).cloned().ok_or(designcraft_doc::DocError::NoItem(from))?;
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        if i.id == src.id {
-                            return;
-                        }
-                        i.fill = src.fill.clone();
-                        i.stroke = src.stroke.clone();
-                        i.corners = src.corners;
-                        i.opacity = src.opacity;
-                        i.blend = src.blend;
-                        i.effects = src.effects.clone();
-                    },
-                    false,
-                )
-            }
+            appearance::object_match_attributes
         ),
         cmd!("transform.flip", "Flip", ["Object", "Transform"], None, "{axis: horizontal|vertical, ids?}", has_selection, |s, p| {
             let h = str_param(p, "axis") != Some("vertical");
@@ -141,23 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{ids: [id], hidden?: bool, locked?: bool} — Layers panel eye/lock per object",
             has_doc,
-            |s, p| {
-                let hidden = p.get("hidden").and_then(Value::as_bool);
-                let locked = p.get("locked").and_then(Value::as_bool);
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        if let Some(h) = hidden {
-                            i.hidden = h;
-                        }
-                        if let Some(l) = locked {
-                            i.locked = l;
-                        }
-                    },
-                    hidden == Some(true) || locked == Some(true),
-                )
-            }
+            arrangement::object_set_flags
         ),
         cmd!("object.fill", "Fill", [], None, "{swatch, tint?: 0..1, ids?}", has_selection, |s, p| {
             let sw = str_param(p, "swatch").ok_or_else(|| bad("object.fill", "missing swatch"))?.to_string();
@@ -171,67 +153,9 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind:…}, cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let mut st = if i.stroke.is_none() && p2.get("swatch").is_none() { Stroke::default() } else { i.stroke.clone() };
-                        if let Some(v) = p2.get("swatch").and_then(Value::as_str) {
-                            st.swatch = v.into();
-                        }
-                        if let Some(v) = p2.get("tint").and_then(Value::as_f64) {
-                            st.tint = v as f32;
-                        }
-                        if let Some(v) = p2.get("weight").and_then(Value::as_f64) {
-                            st.weight = v.max(0.0);
-                        }
-                        if let Some(v) = p2.get("miterLimit").and_then(Value::as_f64) {
-                            st.miter_limit = v.clamp(1.0, 500.0);
-                        }
-                        if let Some(v) = p2.get("gapSwatch").and_then(Value::as_str) {
-                            st.gap_swatch = v.into();
-                        }
-                        if let Some(v) = p2.get("gapTint").and_then(Value::as_f64) {
-                            st.gap_tint = v as f32;
-                        }
-                        if let Some(v) = p2.get("gapOverprint").and_then(Value::as_bool) {
-                            st.gap_overprint = v;
-                        }
-                        for (k, apply) in [("align", 0), ("type", 1), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
-                            if let Some(v) = p2.get(k).cloned() {
-                                let _ = match apply {
-                                    0 => serde_json::from_value(v).map(|x| st.align = x),
-                                    1 => serde_json::from_value(v).map(|x| st.kind = x),
-                                    2 => serde_json::from_value(v).map(|x| st.cap = x),
-                                    3 => serde_json::from_value(v).map(|x| st.join = x),
-                                    4 => serde_json::from_value(v).map(|x| st.start = x),
-                                    _ => serde_json::from_value(v).map(|x| st.end = x),
-                                };
-                            }
-                        }
-                        i.stroke = st;
-                    },
-                    false,
-                )
-            }
+            appearance::object_stroke
         ),
-        cmd!("object.opacity", "Opacity", [], None, "{opacity: 0..1, blend?: normal|multiply|…, ids?}", has_selection, |s, p| {
-            let o = f64_or(p, "opacity", 1.0).clamp(0.0, 1.0) as f32;
-            let blend = p.get("blend").and_then(|b| serde_json::from_value(b.clone()).ok());
-            set_flag(
-                s,
-                p,
-                move |i| {
-                    i.opacity = o;
-                    if let Some(b) = blend {
-                        i.blend = b;
-                    }
-                },
-                false,
-            )
-        }),
+        cmd!("object.opacity", "Opacity", [], None, "{opacity: 0..1, blend?: normal|multiply|…, ids?}", has_selection, appearance::object_opacity),
         cmd!(
             "object.dropShadow",
             "Drop Shadow",
@@ -239,27 +163,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("Cmd+Alt+M"),
             "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, spread? (%), color? (swatch), ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let ds = &mut i.effects.drop_shadow;
-                        ds.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!ds.on);
-                        ds.distance = f64_or(&p2, "distance", ds.distance);
-                        ds.angle = f64_or(&p2, "angle", ds.angle);
-                        ds.global_light = p2.get("globalLight").and_then(Value::as_bool).unwrap_or(ds.global_light);
-                        ds.opacity = f64_or(&p2, "opacity", ds.opacity as f64) as f32;
-                        ds.size = f64_or(&p2, "size", ds.size);
-                        ds.spread = f64_or(&p2, "spread", ds.spread);
-                        if let Some(c) = str_param(&p2, "color") {
-                            ds.color = c.into();
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_drop_shadow
         ),
         cmd!(
             "object.innerShadow",
@@ -268,27 +172,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, choke? (%), color?, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let e = &mut i.effects.inner_shadow;
-                        e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
-                        e.distance = f64_or(&p2, "distance", e.distance);
-                        e.angle = f64_or(&p2, "angle", e.angle);
-                        e.global_light = p2.get("globalLight").and_then(Value::as_bool).unwrap_or(e.global_light);
-                        e.opacity = f64_or(&p2, "opacity", e.opacity as f64) as f32;
-                        e.size = f64_or(&p2, "size", e.size);
-                        e.choke = f64_or(&p2, "choke", e.choke);
-                        if let Some(c) = str_param(&p2, "color") {
-                            e.color = c.into();
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_inner_shadow
         ),
         cmd!(
             "object.outerGlow",
@@ -297,24 +181,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool, opacity?, size?, spread? (%), color?, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let e = &mut i.effects.outer_glow;
-                        e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
-                        e.opacity = f64_or(&p2, "opacity", e.opacity as f64) as f32;
-                        e.size = f64_or(&p2, "size", e.size);
-                        e.spread = f64_or(&p2, "spread", e.spread);
-                        if let Some(c) = str_param(&p2, "color") {
-                            e.color = c.into();
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_outer_glow
         ),
         cmd!(
             "object.exportOptions",
@@ -323,32 +190,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{ids?, artifact?: bool (tagged PDF decoration), rasterize?: bool (EPUB/HTML image), align?: left|center|right|\"\", pageBreakBefore?: bool, altText?}",
             has_selection,
-            |s, p| {
-                let ids = targets(s, p)?;
-                let p = p.clone();
-                s.edit(|d, _| {
-                    for id in &ids {
-                        let Some(it) = d.item_mut(*id) else { continue };
-                        let e = &mut it.export_options;
-                        if let Some(v) = p.get("artifact").and_then(Value::as_bool) {
-                            e.artifact = v;
-                        }
-                        if let Some(v) = p.get("rasterize").and_then(Value::as_bool) {
-                            e.rasterize = v;
-                        }
-                        if let Some(v) = p.get("align").and_then(Value::as_str) {
-                            e.align = v.to_string();
-                        }
-                        if let Some(v) = p.get("pageBreakBefore").and_then(Value::as_bool) {
-                            e.page_break_before = v;
-                        }
-                        if let Some(v) = p.get("altText").and_then(Value::as_str) {
-                            it.alt_text = v.to_string();
-                        }
-                    }
-                    Ok(json!({"objects": ids.len()}))
-                })
-            }
+            appearance::object_export_options
         ),
         cmd!(
             "object.innerGlow",
@@ -357,25 +199,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool, opacity?, size?, choke? (%), center?: bool (glow from the centre), color?, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let e = &mut i.effects.inner_glow;
-                        e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
-                        e.opacity = f64_or(&p2, "opacity", e.opacity as f64) as f32;
-                        e.size = f64_or(&p2, "size", e.size);
-                        e.choke = f64_or(&p2, "choke", e.choke);
-                        e.center = p2.get("center").and_then(Value::as_bool).unwrap_or(e.center);
-                        if let Some(c) = str_param(&p2, "color") {
-                            e.color = c.into();
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_inner_glow
         ),
         cmd!(
             "object.bevel",
@@ -384,30 +208,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool, size?, depth? (%), angle?, globalLight?: bool, highlight?, highlightOpacity?, shadow?, shadowOpacity?, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let e = &mut i.effects.bevel;
-                        e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
-                        e.size = f64_or(&p2, "size", e.size);
-                        e.depth = f64_or(&p2, "depth", e.depth);
-                        e.angle = f64_or(&p2, "angle", e.angle);
-                        e.global_light = p2.get("globalLight").and_then(Value::as_bool).unwrap_or(e.global_light);
-                        e.highlight_opacity = f64_or(&p2, "highlightOpacity", e.highlight_opacity as f64) as f32;
-                        e.shadow_opacity = f64_or(&p2, "shadowOpacity", e.shadow_opacity as f64) as f32;
-                        if let Some(c) = str_param(&p2, "highlight") {
-                            e.highlight = c.into();
-                        }
-                        if let Some(c) = str_param(&p2, "shadow") {
-                            e.shadow = c.into();
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_bevel
         ),
         cmd!(
             "object.satin",
@@ -416,26 +217,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool, opacity?, angle?, distance?, size?, invert?: bool, color?, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let e = &mut i.effects.satin;
-                        e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
-                        e.opacity = f64_or(&p2, "opacity", e.opacity as f64) as f32;
-                        e.angle = f64_or(&p2, "angle", e.angle);
-                        e.distance = f64_or(&p2, "distance", e.distance);
-                        e.size = f64_or(&p2, "size", e.size);
-                        e.invert = p2.get("invert").and_then(Value::as_bool).unwrap_or(e.invert);
-                        if let Some(c) = str_param(&p2, "color") {
-                            e.color = c.into();
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_satin
         ),
         cmd!(
             "object.directionalFeather",
@@ -444,30 +226,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool, widths?: [top, left, bottom, right] | number, ids?}",
             has_selection,
-            |s, p| {
-                let p2 = p.clone();
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        let e = &mut i.effects.directional_feather;
-                        e.on = p2.get("on").and_then(Value::as_bool).unwrap_or(!e.on);
-                        match p2.get("widths") {
-                            Some(Value::Number(n)) => e.widths = [n.as_f64().unwrap_or(0.0).max(0.0); 4],
-                            Some(v @ Value::Array(_)) => {
-                                if let Ok(w) = serde_json::from_value::<[f64; 4]>(v.clone()) {
-                                    e.widths = w.map(|x| x.max(0.0));
-                                }
-                            }
-                            _ => {}
-                        }
-                        if e.on && e.widths.iter().all(|w| *w <= 0.0) {
-                            e.widths = [9.0; 4];
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_directional_feather
         ),
         cmd!("object.feather", "Basic Feather", ["Object", "Effects"], None, "{width (0 = off), ids?}", has_selection, |s, p| {
             let w = f64_or(p, "width", 9.0).max(0.0);
@@ -504,29 +263,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Some("Cmd+Alt+W"),
             "{mode: none|boundingBox|contour|jumpObject|jumpToNextColumn, offset?: number|[t,l,b,r], invert?: bool, ids?}",
             has_selection,
-            |s, p| {
-                let mode = p.get("mode").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(designcraft_doc::WrapMode::BoundingBox);
-                let off = match p.get("offset") {
-                    Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
-                    Some(v) => serde_json::from_value(v.clone()).ok(),
-                    None => None,
-                };
-                let invert = p.get("invert").and_then(Value::as_bool);
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        i.wrap.mode = mode;
-                        if let Some(o) = off {
-                            i.wrap.offsets = o;
-                        }
-                        if let Some(v) = invert {
-                            i.wrap.invert = v;
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_text_wrap
         ),
         cmd!(
             "object.fit",
@@ -588,15 +325,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{sides?: 3–100, starInset?: 0–100 (%)} → the settings new polygons use",
             super::always,
-            |s, p| {
-                if let Some(n) = p.get("sides").and_then(Value::as_u64) {
-                    s.prefs.polygon_sides = (n as u32).clamp(3, 100);
-                }
-                if let Some(v) = p.get("starInset").and_then(Value::as_f64) {
-                    s.prefs.star_inset = (v / 100.0).clamp(0.0, 1.0);
-                }
-                Ok(json!({"sides": s.prefs.polygon_sides, "starInset": (s.prefs.star_inset * 100.0).round()}))
-            }
+            creation::tool_polygon_settings
         ),
         cmd!(
             "gap.move",
@@ -614,26 +343,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{rect, cols, rows, gutter? (pt, 12), shape?, content?, spread?} — a grid of frames filling `rect` (frame tools: arrow keys while dragging)",
             has_doc,
-            |s, p| {
-                let rect = rect_param(p, "rect").ok_or_else(|| bad("frame.grid", "missing rect"))?;
-                let cols = p.get("cols").and_then(Value::as_u64).unwrap_or(1).clamp(1, 100) as usize;
-                let rows = p.get("rows").and_then(Value::as_u64).unwrap_or(1).clamp(1, 100) as usize;
-                let gutter = p.get("gutter").and_then(Value::as_f64).unwrap_or(12.0).max(0.0);
-                let cw = ((rect.width() - gutter * (cols - 1) as f64) / cols as f64).max(0.5);
-                let ch = ((rect.height() - gutter * (rows - 1) as f64) / rows as f64).max(0.5);
-                let mut ids = Vec::new();
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let x0 = rect.x0 + c as f64 * (cw + gutter);
-                        let y0 = rect.y0 + r as f64 * (ch + gutter);
-                        let q = super::with_param(&super::with_param(p, "rect", json!([x0, y0, x0 + cw, y0 + ch])), "caret", json!(false));
-                        ids.push(frame_create(s, &q)?["id"].clone());
-                    }
-                }
-                let sel: Vec<ItemId> = ids.iter().filter_map(Value::as_u64).map(ItemId).collect();
-                s.doc_mut()?.selection = designcraft_doc::Selection::items(sel);
-                Ok(json!({"ids": ids}))
-            }
+            text_frames::frame_grid
         ),
         cmd!(
             "object.clippingPath",
@@ -651,25 +361,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{on?: bool (default: toggle), ids?} — the selected text frame's story becomes the primary story (Smart Text Reflow adds and removes pages for it)",
             has_selection,
-            |s, p| {
-                let ids = targets(s, p)?;
-                let sid = ids
-                    .iter()
-                    .find_map(|id| s.doc().ok()?.doc.item(*id)?.text_frame().map(|t| t.story))
-                    .ok_or_else(|| bad("object.primaryTextFrame", "select a text frame"))?;
-                let cur = s.doc()?.doc.settings.primary_story;
-                let on = p.get("on").and_then(Value::as_bool).unwrap_or(cur != Some(sid));
-                s.edit(|d, _| {
-                    d.settings.primary_story = if on {
-                        Some(sid)
-                    } else if cur == Some(sid) {
-                        None
-                    } else {
-                        cur
-                    };
-                    Ok(json!({"primary": on, "story": sid.0}))
-                })
-            }
+            text_frames::object_primary_text_frame
         ),
         cmd!(
             "object.attributes",
@@ -678,29 +370,7 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{overprintFill?, overprintStroke?, overprintGap?, nonprinting?: bool, ids?} — Attributes panel",
             has_selection,
-            |s, p| {
-                let b = |k: &str| p.get(k).and_then(Value::as_bool);
-                let (of, os, og, np) = (b("overprintFill"), b("overprintStroke"), b("overprintGap"), b("nonprinting"));
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        if let Some(v) = of {
-                            i.fill.overprint = v;
-                        }
-                        if let Some(v) = os {
-                            i.stroke.overprint = v;
-                        }
-                        if let Some(v) = og {
-                            i.stroke.gap_overprint = v;
-                        }
-                        if let Some(v) = np {
-                            i.nonprinting = v;
-                        }
-                    },
-                    false,
-                )
-            }
+            attributes::object_attributes
         ),
         cmd!(
             "object.globalLight",
@@ -749,1194 +419,14 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             "{isolate?: bool, knockout?: bool, ids?} — Effects panel: Isolate Blending, Knockout Group",
             has_selection,
-            |s, p| {
-                let iso = p.get("isolate").and_then(Value::as_bool);
-                let ko = p.get("knockout").and_then(Value::as_bool);
-                set_flag(
-                    s,
-                    p,
-                    move |i| {
-                        if let Some(v) = iso {
-                            i.isolate = v;
-                        }
-                        if let Some(v) = ko {
-                            i.knockout = v;
-                        }
-                    },
-                    false,
-                )
-            }
+            appearance::object_transparency_group
         ),
-        cmd!(query "object.findByLabel", "Find by Script Label", [], None, "{label} → ids of objects whose label is `label`", has_doc, |s, p| {
-            let label = str_param(p, "label").unwrap_or("");
-            let d = &s.doc()?.doc;
-            let mut ids = Vec::new();
-            for sp in d.spreads.iter().chain(d.parents.iter()) {
-                for it in &sp.items {
-                    it.walk(&mut |x| {
-                        if x.label == label {
-                            ids.push(x.id.0);
-                        }
-                    });
-                }
-            }
-            Ok(json!({"ids": ids}))
-        }),
+        cmd!(query "object.findByLabel", "Find by Script Label", [], None, "{label} → ids of objects whose label is `label`", has_doc, attributes::object_find_by_label),
         cmd!("object.setLayer", "Move to Layer", [], None, "{layer, ids?}", has_selection, |s, p| {
             let l = designcraft_doc::LayerId(p.get("layer").and_then(Value::as_u64).unwrap_or(0));
             set_flag(s, p, move |i| i.layer = l, false)
         }),
     ]
-}
-
-fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
-    let rect = rect_param(p, "rect").ok_or_else(|| bad("frame.create", "missing rect"))?;
-    let shape = str_param(p, "shape").unwrap_or("rectangle");
-    let content = str_param(p, "content").unwrap_or("graphic");
-    let sr = spread_param(p, "spread");
-    let lid = s.doc()?.active_layer;
-    let text = super::text_param(p, "text");
-    let caret = bool_or(p, "caret", content == "text");
-    let vertical = bool_or(p, "vertical", false);
-    let sides = p.get("sides").and_then(Value::as_u64).map_or(s.prefs.polygon_sides, |v| v as u32).clamp(3, 100);
-    let inset = p.get("starInset").and_then(Value::as_f64).map_or(s.prefs.star_inset, |v| v / 100.0).clamp(0.0, 1.0);
-    let rect = Rect::new(rect.x0, rect.y0, rect.x1.max(rect.x0 + 0.5), rect.y1.max(rect.y0 + 0.5));
-    s.edit(|d, sel| {
-        if d.spread(sr).is_none() {
-            return Err(bad("frame.create", "no such spread"));
-        }
-        let (path, sh) = match shape {
-            "ellipse" | "oval" => (shapes::ellipse(rect), Shape::Oval),
-            "polygon" => (polygon_in(rect, sides, inset), Shape::Polygon),
-            _ => (shapes::rectangle(rect), Shape::Rectangle),
-        };
-        if content == "text" {
-            let (id, sid) = d.add_text_frame(sr, rect, lid, &text, ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() })?;
-            if let Some(it) = d.item_mut(id) {
-                it.path = path;
-                it.shape = sh;
-            }
-            super::text::set_story_direction(d, &[sid], vertical);
-            *sel = if caret {
-                Selection::text(TextSel { story: sid, anchor: text.len(), focus: text.len(), frame: Some(id), cell: None })
-            } else {
-                Selection::items(vec![id])
-            };
-            return Ok(json!({"id": id.0, "story": sid.0}));
-        }
-        let id = ItemId(d.alloc());
-        let mut it = Item::new(id, lid, sh, path);
-        if content == "graphic" {
-            it.object_style = d.styles.default_graphic_frame.clone();
-        } else {
-            // Shapes drawn with Rectangle/Ellipse/Polygon get the default 1 pt black stroke.
-            it.stroke = Stroke::default();
-        }
-        d.insert_item(sr, it, None)?;
-        *sel = Selection::items(vec![id]);
-        Ok(json!({"id": id.0}))
-    })
-}
-
-/// A polygon (or, with a star inset, a star with `sides` points) fitted to `r`.
-pub(crate) fn polygon_in(r: Rect, sides: u32, inset: f64) -> designcraft_geom::PathData {
-    let c = r.center();
-    let mut p =
-        if inset > 0.0 { shapes::star(Point::ZERO, 1.0, (1.0 - inset).max(0.0), sides, 0.0) } else { shapes::polygon(Point::ZERO, 1.0, sides, 0.0) };
-    // Fit the unit polygon's bounds to the rect.
-    if let Some(b) = p.bounds() {
-        let a = Affine::translate(c.to_vec2())
-            * Affine::scale_non_uniform(r.width() / b.width().max(1e-9), r.height() / b.height().max(1e-9))
-            * Affine::translate(-b.center().to_vec2());
-        p.transform(a);
-    }
-    p
-}
-
-fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
-    let a = point_param(p, "a").ok_or_else(|| bad("line.create", "missing a"))?;
-    let b = point_param(p, "b").ok_or_else(|| bad("line.create", "missing b"))?;
-    let sr = spread_param(p, "spread");
-    let lid = s.doc()?.active_layer;
-    s.edit(|d, sel| {
-        let id = ItemId(d.alloc());
-        let mut it = Item::new(id, lid, Shape::GraphicLine, shapes::line(a, b));
-        it.stroke = Stroke::default();
-        d.insert_item(sr, it, None)?;
-        *sel = Selection::items(vec![id]);
-        Ok(json!({"id": id.0}))
-    })
-}
-
-/// Deep-copy items `ids` from `src` into `dst` spread `to` (fresh ids; text frames get story copies).
-pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
-    let mut out = Vec::new();
-    let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
-    for id in ids {
-        let Some(it) = src.item(*id) else { continue };
-        let mut copy = it.clone();
-        copy.xf = Affine::translate(off) * copy.xf;
-        renumber(dst, src, &mut copy, &mut story_map);
-        if dst.layer(copy.layer).is_none() {
-            copy.layer = dst.default_layer();
-        }
-        let nid = copy.id;
-        dst.insert_item(to, copy, None)?;
-        out.push(nid);
-    }
-    Ok(out)
-}
-
-fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
-    it.id = ItemId(dst.alloc());
-    let my_id = it.id;
-    match &mut it.content {
-        Content::Text(tf) => {
-            let new_sid = match stories.get(&tf.story) {
-                Some(n) => *n,
-                None => {
-                    let n = StoryId(dst.alloc());
-                    let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
-                    st.id = n;
-                    st.frames.clear();
-                    dst.stories.insert(n, Arc::new(st));
-                    stories.insert(tf.story, n);
-                    n
-                }
-            };
-            tf.story = new_sid;
-            if let Some(st) = dst.story_mut(new_sid) {
-                st.frames.push(my_id);
-            }
-        }
-        Content::Graphic(g) => {
-            if let Some(a) = src.assets.get(&g.asset)
-                && !dst.assets.contains_key(&g.asset)
-            {
-                dst.assets.insert(g.asset, a.clone());
-            }
-        }
-        Content::Group { items } => {
-            for c in items.iter_mut() {
-                renumber(dst, src, Arc::make_mut(c), stories);
-            }
-        }
-        Content::Unassigned => {}
-    }
-}
-
-fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let (dx, dy) = (f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
-    let copy = bool_or(p, "copy", false);
-    let to: Option<SpreadRef> = p.get("toSpread").and_then(|v| serde_json::from_value(v.clone()).ok());
-    s.edit(|d, sel| {
-        let ids = if copy {
-            let src = d.clone();
-            let mut new = Vec::new();
-            for id in &ids {
-                let sr = d.find(*id).map(|l| l.spread).unwrap_or(SpreadRef::Doc(0));
-                new.extend(duplicate_from(d, &src, &[*id], to.unwrap_or(sr), Vec2::ZERO)?);
-            }
-            *sel = Selection::items(new.clone());
-            new
-        } else {
-            ids
-        };
-        for id in &ids {
-            if let Some(target) = to
-                && !copy
-                && let Some(loc) = d.find(*id)
-                && loc.spread != target
-                && loc.path.len() == 1
-            {
-                let it = d.remove_item_keep_story(*id)?;
-                d.insert_item(target, it, None)?;
-            }
-            let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
-            if it.locked {
-                continue;
-            }
-            it.xf = Affine::translate((dx, dy)) * it.xf;
-        }
-        Ok(json!({"moved": ids.len()}))
-    })
-}
-
-fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let from = rect_param(p, "from").ok_or_else(|| bad("transform.resize", "missing from"))?;
-    let to = rect_param(p, "to").ok_or_else(|| bad("transform.resize", "missing to"))?;
-    let scale_content = bool_or(p, "content", false);
-    let distribute = bool_or(p, "distribute", false);
-    if from.width().abs() < 1e-9 || from.height().abs() < 1e-9 {
-        return Err(bad("transform.resize", "degenerate source rect"));
-    }
-    let sx = to.width() / from.width();
-    let sy = to.height() / from.height();
-    let sx = if sx.abs() < 1e-3 { 1e-3f64.copysign(sx) } else { sx };
-    let sy = if sy.abs() < 1e-3 { 1e-3f64.copysign(sy) } else { sy };
-    let m = Affine::translate((to.x0, to.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
-    let strokes = s.prefs.scale_strokes;
-    s.edit(|d, _| {
-        for id in &ids {
-            let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
-            if it.locked {
-                continue;
-            }
-            if distribute {
-                let c = it.bounds().center();
-                it.xf = Affine::translate(m * c - c) * it.xf;
-            } else if scale_content {
-                scale_item(it, m, (sx * sy).abs().sqrt(), strokes);
-            } else if matches!(it.content, Content::Group { .. }) {
-                it.xf = m * it.xf;
-            } else {
-                // Resize the frame's path (in inner space); content keeps its size (InDesign's
-                // default) unless the frame auto-fits it.
-                let inner = it.xf.inverse() * m * it.xf;
-                bake(it, inner);
-                let r = it.inner_bounds();
-                if let Content::Graphic(g) = &mut it.content
-                    && let Some(xf) = g.fitted(r, g.auto_fit)
-                {
-                    g.xf = xf;
-                }
-            }
-        }
-        Ok(json!({"resized": ids.len()}))
-    })
-}
-
-fn union_bounds(d: &Document, ids: &[ItemId]) -> Rect {
-    ids.iter().filter_map(|i| d.item(*i)).map(Item::bounds).reduce(|a, b| a.union(b)).unwrap_or(Rect::ZERO)
-}
-
-/// Transform an item's geometry in its own space: the path and the gradient vector with it.
-pub(crate) fn bake(it: &mut Item, inner: Affine) {
-    it.path.transform(inner);
-    if let Some([x0, y0, x1, y1]) = it.fill.gradient_vector {
-        let (a, b) = (inner * Point::new(x0, y0), inner * Point::new(x1, y1));
-        it.fill.gradient_vector = Some([a.x, a.y, b.x, b.y]);
-    }
-}
-
-/// Multiply the stroke weights of an item and everything nested in it.
-fn scale_weights(it: &mut Item, k: f64) {
-    it.stroke.weight *= k;
-    if let Content::Group { items } = &mut it.content {
-        for c in items.iter_mut() {
-            scale_weights(Arc::make_mut(c), k);
-        }
-    }
-}
-
-/// Scale an item and its content by the spread-space transform `m` (InDesign's "Apply to
-/// Content"): paths and placed graphics take the scale into their geometry, so the stroke weight
-/// is scaled by `k` (the mean scale factor) only with Scale Strokes on; text frames and groups are
-/// transformed as a whole, so with Scale Strokes off their weights are divided by `k` to keep
-/// their look.
-pub(crate) fn scale_item(it: &mut Item, m: Affine, k: f64, strokes: bool) {
-    let inner = it.xf.inverse() * m * it.xf;
-    match &mut it.content {
-        Content::Unassigned => {
-            bake(it, inner);
-            if strokes {
-                it.stroke.weight *= k;
-            }
-        }
-        Content::Graphic(g) => {
-            g.xf = inner * g.xf;
-            bake(it, inner);
-            if strokes {
-                it.stroke.weight *= k;
-            }
-        }
-        Content::Text(_) | Content::Group { .. } => {
-            it.xf = m * it.xf;
-            if !strokes && k > 1e-9 {
-                scale_weights(it, 1.0 / k);
-            }
-        }
-    }
-}
-
-fn transform_again(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let (list, _, _) = &s.transforms;
-    if list.is_empty() {
-        return Err(bad("transform.again", "no transform to repeat"));
-    }
-    let steps: Vec<(String, Value)> = if bool_or(p, "sequence", false) { list.clone() } else { list.last().cloned().into_iter().collect() };
-    let mut groups: Vec<Vec<ItemId>> = if bool_or(p, "individually", false) { ids.iter().map(|i| vec![*i]).collect() } else { vec![ids.clone()] };
-    // Run the steps directly (no recording, one undo step for the whole repeat).
-    let saved = s.transforms.clone();
-    for (cmd, params) in &steps {
-        let spec = super::find_command(cmd).ok_or_else(|| bad("transform.again", "unknown transform"))?;
-        for g in &groups {
-            let q = super::with_param(params, "ids", json!(g.iter().map(|i| i.0).collect::<Vec<_>>()));
-            (spec.run)(s, &q)?;
-        }
-        // Moving a copy selects the copies: later steps (and the next repeat) act on them.
-        if bool_or(params, "copy", false) {
-            groups = vec![s.doc()?.selection.items.clone()];
-        }
-    }
-    s.transforms = saved;
-    Ok(json!({"repeated": steps.len()}))
-}
-
-fn clear_transformations(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    s.edit(|d, _| {
-        for id in &ids {
-            let Some(it) = d.item_mut(*id) else { continue };
-            if matches!(it.content, Content::Group { .. }) && it.shape == Shape::Group {
-                continue;
-            }
-            let c = it.bounds().center();
-            let inner = it.inner_bounds().center();
-            it.xf = Affine::translate(c - inner);
-        }
-        ok()
-    })
-}
-
-fn apply_about_center(s: &mut Session, p: &Value, a: Affine) -> Result<Value> {
-    let ids = targets(s, p)?;
-    s.edit(|d, _| {
-        let mut b: Option<Rect> = None;
-        for id in &ids {
-            if let Some(it) = d.item(*id) {
-                b = Some(b.map_or(it.bounds(), |r| r.union(it.bounds())));
-            }
-        }
-        let c = b.unwrap_or(Rect::ZERO).center();
-        let m = Affine::translate(c.to_vec2()) * a * Affine::translate(-c.to_vec2());
-        for id in &ids {
-            if let Some(it) = d.item_mut(*id) {
-                it.xf = m * it.xf;
-            }
-        }
-        ok()
-    })
-}
-
-fn transform_rotate(s: &mut Session, p: &Value) -> Result<Value> {
-    let a = f64_or(p, "angle", 0.0);
-    apply_about_center(s, p, Affine::rotate(-a.to_radians()))
-}
-
-/// The transform an item's panel values are measured from: its own (relative to its container)
-/// or, with Transformations are Totals, the whole chain to the pasteboard.
-fn measured_xf(d: &designcraft_doc::Document, id: ItemId, totals: bool) -> Option<(Affine, Affine)> {
-    let loc = d.find(id)?;
-    let it = d.item_at(&loc)?;
-    let parent = if totals { d.parent_xf(&loc) } else { Affine::IDENTITY };
-    Some((parent, parent * it.xf))
-}
-
-fn values_json(m: Affine) -> Value {
-    let v = designcraft_geom::decompose::decompose(m);
-    let r = |x: f64| (x * 1e4).round() / 1e4;
-    json!({"scaleX": r(v.scale_x * 100.0), "scaleY": r(v.scale_y * 100.0), "rotation": r(v.rotation), "shear": r(v.shear)})
-}
-
-fn transform_info(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let totals = s.prefs.transformations_are_totals;
-    let d = &s.doc()?.doc;
-    let id = *ids.first().ok_or_else(|| bad("transform.info", "nothing selected"))?;
-    let (_, m) = measured_xf(d, id, totals).ok_or_else(|| bad("transform.info", "no such object"))?;
-    let mut out = values_json(m);
-    if let Some(g) = d.item(id).and_then(Item::graphic) {
-        out["content"] = values_json(if totals { m * g.xf } else { g.xf });
-    }
-    Ok(out)
-}
-
-/// Absolute rotation / shear / scale from the Transform panel, about the reference point.
-fn transform_values(s: &mut Session, p: &Value, ids: &[ItemId], rf: usize) -> Result<Value> {
-    let totals = s.prefs.transformations_are_totals;
-    let strokes = s.prefs.scale_strokes;
-    let get = |k: &str| p.get(k).and_then(Value::as_f64);
-    let (rot, shear, sx, sy) = (get("rotation"), get("shear").map(|v| v.clamp(-85.0, 85.0)), get("scaleX"), get("scaleY"));
-    if [sx, sy].iter().flatten().any(|v| v.abs() < 0.01) {
-        return Err(bad("transform.set", "scale too small"));
-    }
-    s.edit(|d, _| {
-        for id in ids {
-            let Some((parent, cur)) = measured_xf(d, *id, totals) else { continue };
-            let Some(it) = d.item(*id) else { continue };
-            // The reference point, on the pasteboard, then in the measuring space.
-            let full = d.find(*id).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
-            let spread_a = designcraft_geom::reference_point((full * it.xf).transform_rect_bbox(it.inner_bounds()), rf);
-            let a = if totals { spread_a } else { full.inverse() * spread_a };
-            let v = designcraft_geom::decompose::decompose(cur);
-            let mut t = v;
-            if let Some(r) = rot {
-                t.rotation = r;
-            }
-            if let Some(k) = shear {
-                t.shear = k;
-            }
-            let lin = |m: Affine| {
-                let c = m.as_coeffs();
-                Affine::new([c[0], c[1], c[2], c[3], 0.0, 0.0])
-            };
-            let delta = designcraft_geom::decompose::compose(&t) * lin(cur).inverse();
-            // Δ in measuring space about `a`, brought into the item's container space.
-            let m = parent.inverse() * Affine::translate(a.to_vec2()) * delta * Affine::translate(-a.to_vec2()) * parent;
-            let it = d.item_mut(*id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
-            it.xf = m * it.xf;
-            // Scale: relative to what is shown (frames show 100% — their scale lives in the geometry).
-            if sx.is_some() || sy.is_some() {
-                let (fx, fy) = (sx.map_or(1.0, |x| x / 100.0 / v.scale_x), sy.map_or(1.0, |y| y / 100.0 / v.scale_y));
-                let m = Affine::translate(a.to_vec2()) * Affine::scale_non_uniform(fx, fy) * Affine::translate(-a.to_vec2());
-                let m = parent.inverse() * m * parent;
-                scale_item(it, m, (fx * fy).abs().sqrt(), strokes);
-            }
-        }
-        ok()
-    })
-}
-
-fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    if ["rotation", "shear", "scaleX", "scaleY"].iter().any(|k| p.get(*k).is_some()) {
-        let rf = p.get("ref").and_then(Value::as_u64).unwrap_or(4) as usize;
-        if !["x", "y", "width", "height"].iter().any(|k| p.get(*k).is_some()) {
-            return transform_values(s, p, &ids, rf);
-        }
-        transform_values(s, p, &ids, rf)?;
-    }
-    let rf = p.get("ref").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let with_stroke = s.prefs.dimensions_include_stroke;
-    s.edit(|d, _| {
-        if !ids.iter().any(|i| d.item(*i).is_some()) {
-            return ok();
-        }
-        // The measured box (with Dimensions Include Stroke Weight, the stroke's outer edge) and
-        // the geometry it pads.
-        let geom = union_bounds(d, &ids);
-        let from = if with_stroke {
-            ids.iter().filter_map(|i| d.item(*i)).map(Item::visible_bounds).reduce(|a, b| a.union(b)).unwrap_or(geom)
-        } else {
-            geom
-        };
-        let pad = (geom.x0 - from.x0, geom.y0 - from.y0, from.x1 - geom.x1, from.y1 - geom.y1);
-        let w = f64_or(p, "width", from.width()).max(0.01);
-        let h = f64_or(p, "height", from.height()).max(0.01);
-        let anchor = designcraft_geom::reference_point(from, rf);
-        // New rect keeping the reference point fixed, then moved so the ref point lands on x/y.
-        let fx = [0.0, 0.5, 1.0][rf % 3];
-        let fy = [0.0, 0.5, 1.0][(rf / 3).min(2)];
-        let mut to = Rect::new(anchor.x - fx * w, anchor.y - fy * h, anchor.x - fx * w + w, anchor.y - fy * h + h);
-        // x/y are the reference point position relative to the page origin of the first page in the spread.
-        let page_x = ids
-            .first()
-            .and_then(|i| d.find(*i))
-            .and_then(|l| {
-                d.spread(l.spread).map(|sp| {
-                    let pi = sp.page_at_x(from.center().x).unwrap_or(0);
-                    sp.pages[pi].x
-                })
-            })
-            .unwrap_or(0.0);
-        if let Some(x) = p.get("x").and_then(Value::as_f64) {
-            to = to + Vec2::new(x + page_x - anchor.x, 0.0);
-        }
-        if let Some(y) = p.get("y").and_then(Value::as_f64) {
-            to = to + Vec2::new(0.0, y - anchor.y);
-        }
-        let to = Rect::new(to.x0 + pad.0, to.y0 + pad.1, (to.x1 - pad.2).max(to.x0 + pad.0 + 0.01), (to.y1 - pad.3).max(to.y0 + pad.1 + 0.01));
-        let m = Affine::translate((to.x0, to.y0))
-            * Affine::scale_non_uniform(to.width() / geom.width().max(1e-9), to.height() / geom.height().max(1e-9))
-            * Affine::translate((-geom.x0, -geom.y0));
-        for id in &ids {
-            if let Some(it) = d.item_mut(*id) {
-                if matches!(it.content, Content::Group { .. }) {
-                    it.xf = m * it.xf;
-                } else {
-                    let inner = it.xf.inverse() * m * it.xf;
-                    bake(it, inner);
-                }
-            }
-        }
-        ok()
-    })
-}
-
-fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let to = str_param(p, "to").unwrap_or("front").to_string();
-    s.edit(|d, _| {
-        for id in &ids {
-            let Some(loc) = d.find(*id) else { continue };
-            if loc.path.len() != 1 {
-                continue;
-            }
-            let Some(sp) = d.spread_mut(loc.spread) else { continue };
-            let i = loc.path[0];
-            let n = sp.items.len();
-            let it = sp.items.remove(i);
-            let j = match to.as_str() {
-                "front" => n - 1,
-                "back" => 0,
-                "forward" => (i + 1).min(n - 1),
-                _ => i.saturating_sub(1),
-            };
-            sp.items.insert(j, it);
-        }
-        ok()
-    })
-}
-
-fn group(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    if ids.len() < 2 {
-        return Err(bad("object.group", "select at least two objects"));
-    }
-    s.edit(|d, sel| {
-        let sr = d.find(ids[0]).map(|l| l.spread).ok_or(designcraft_doc::DocError::NoItem(ids[0]))?;
-        // Keep stacking order: collect in z-order.
-        let order: Vec<ItemId> = d.spread(sr).map(|sp| sp.items.iter().map(|i| i.id).filter(|i| ids.contains(i)).collect()).unwrap_or_default();
-        let front = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| Some(&i.id) == order.last())).unwrap_or(0);
-        let layer = d.item(order[0]).map(|i| i.layer).unwrap_or_default();
-        let mut kids = Vec::new();
-        for id in &order {
-            kids.push(d.remove_item_keep_story(*id)?);
-        }
-        let gid = ItemId(d.alloc());
-        let mut g = Item::new(gid, layer, Shape::Group, designcraft_geom::PathData::default());
-        g.content = Content::Group { items: kids.into_iter().map(Arc::new).collect() };
-        let at = front + 1 - order.len();
-        d.insert_item(sr, g, Some(at))?;
-        *sel = Selection::items(vec![gid]);
-        Ok(json!({"id": gid.0}))
-    })
-}
-
-fn ungroup(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    s.edit(|d, sel| {
-        let mut out = Vec::new();
-        for id in &ids {
-            let Some(loc) = d.find(*id) else { continue };
-            let Some(g) = d.item(*id).cloned() else { continue };
-            let Content::Group { items } = &g.content else { continue };
-            if loc.path.len() != 1 {
-                continue;
-            }
-            let Some(sp) = d.spread_mut(loc.spread) else { continue };
-            sp.items.remove(loc.path[0]);
-            for (k, c) in items.iter().enumerate() {
-                let mut c = (**c).clone();
-                c.xf = g.xf * c.xf;
-                out.push(c.id);
-                sp.items.insert(loc.path[0] + k, Arc::new(c));
-            }
-        }
-        *sel = Selection::items(out);
-        ok()
-    })
-}
-
-fn set_flag(s: &mut Session, p: &Value, f: impl Fn(&mut Item), deselect: bool) -> Result<Value> {
-    let ids = targets(s, p)?;
-    s.edit(|d, sel| {
-        for id in &ids {
-            if let Some(it) = d.item_mut(*id) {
-                f(it);
-            }
-        }
-        if deselect {
-            *sel = Selection::default();
-        }
-        Ok(json!({"changed": ids.len()}))
-    })
-}
-
-fn all_flag(s: &mut Session, f: impl Fn(&mut Item)) -> Result<Value> {
-    s.edit(|d, _| {
-        for i in 0..d.spreads.len() {
-            let sp = Arc::make_mut(&mut d.spreads[i]);
-            for it in &mut sp.items {
-                f(Arc::make_mut(it));
-            }
-        }
-        ok()
-    })
-}
-
-fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let t = str_param(p, "type").unwrap_or("unassigned").to_string();
-    s.edit(|d, _| {
-        for id in &ids {
-            let cur = d.item(*id).map(|i| i.content.clone());
-            match (t.as_str(), cur) {
-                ("text", Some(Content::Unassigned | Content::Graphic(_))) => {
-                    let sid = StoryId(d.alloc());
-                    let mut st = Story::new(sid);
-                    st.frames.push(*id);
-                    d.stories.insert(sid, Arc::new(st));
-                    if let Some(it) = d.item_mut(*id) {
-                        it.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
-                    }
-                }
-                ("graphic" | "unassigned", Some(Content::Text(tf))) => {
-                    let empty = d.story(tf.story).map(|s| s.frames.len() == 1).unwrap_or(true);
-                    if let Some(st) = d.story_mut(tf.story) {
-                        st.frames.retain(|f| f != id);
-                    }
-                    if empty {
-                        d.stories.remove(&tf.story);
-                    }
-                    if let Some(it) = d.item_mut(*id) {
-                        it.content = Content::Unassigned;
-                    }
-                }
-                ("graphic" | "unassigned", Some(Content::Graphic(_))) if t == "unassigned" => {
-                    if let Some(it) = d.item_mut(*id) {
-                        it.content = Content::Unassigned;
-                    }
-                }
-                _ => {}
-            }
-        }
-        ok()
-    })
-}
-
-fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
-    let st = s.doc()?;
-    let mut ids = targets(s, p)?;
-    if ids.is_empty()
-        && let Some(t) = st.selection.text
-    {
-        ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
-    }
-    let p = p.clone();
-    s.edit(|d, _| {
-        for id in &ids {
-            let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
-            let o = &mut tf.options;
-            if let Some(v) = p.get("columns").and_then(Value::as_u64) {
-                o.columns = (v as u32).clamp(1, 40);
-            }
-            if let Some(v) = p.get("gutter").and_then(Value::as_f64) {
-                o.gutter = v.max(0.0);
-            }
-            match p.get("inset") {
-                Some(Value::Number(n)) => o.inset = [n.as_f64().unwrap_or(0.0); 4],
-                Some(v @ Value::Array(_)) => {
-                    if let Ok(a) = serde_json::from_value(v.clone()) {
-                        o.inset = a;
-                    }
-                }
-                _ => {}
-            }
-            for (k, which) in [("verticalJustification", 0), ("firstBaseline", 1), ("autoSize", 2), ("columnsKind", 3)] {
-                if let Some(v) = p.get(k).cloned() {
-                    let _ = match which {
-                        0 => serde_json::from_value(v).map(|x| o.vertical_justification = x),
-                        1 => serde_json::from_value(v).map(|x| o.first_baseline = x),
-                        2 => serde_json::from_value(v).map(|x| o.auto_size = x),
-                        _ => serde_json::from_value(v).map(|x| o.columns_kind = x),
-                    };
-                }
-            }
-            if let Some(v) = p.get("ignoreWrap").and_then(Value::as_bool) {
-                o.ignore_wrap = v;
-            }
-            if let Some(v) = p.get("balanceColumns").and_then(Value::as_bool) {
-                o.balance_columns = v;
-            }
-            if let Some(v) = p.get("columnRule").and_then(Value::as_bool) {
-                o.column_rule = v;
-            }
-        }
-        // Story direction belongs to the story: every frame of the thread turns.
-        if let Some(v) = p.get("vertical").and_then(Value::as_bool) {
-            let stories: Vec<StoryId> = ids.iter().filter_map(|id| d.item(*id).and_then(Item::text_frame).map(|t| t.story)).collect();
-            super::text::set_story_direction(d, &stories, v);
-        }
-        Ok(json!({"changed": ids.len()}))
-    })
-}
-
-/// The gap at `p` on spread `sr`: (vertical gap?, edge a, edge b, ids ending at a, ids starting at b).
-pub(crate) fn find_gap(d: &Document, sr: designcraft_doc::SpreadRef, p: Point) -> Option<(bool, f64, f64, Vec<ItemId>, Vec<ItemId>)> {
-    let sp = d.spread(sr)?;
-    let page = sp.page_at_x(p.x).and_then(|i| sp.pages.get(i)).map(|pg| pg.bounds())?;
-    let items: Vec<(ItemId, Rect)> = sp
-        .items
-        .iter()
-        .filter(|it| !it.hidden && !it.locked && d.layer(it.layer).is_none_or(|l| !l.locked && l.visible))
-        .map(|it| (it.id, it.bounds()))
-        .collect();
-    if items.iter().any(|(_, b)| b.contains(p)) {
-        return None;
-    }
-    // Between left and right neighbours (a vertical gap), or above and below (horizontal).
-    let side = |vertical: bool| {
-        let (pos, lo, hi) = if vertical { (p.x, page.x0, page.x1) } else { (p.y, page.y0, page.y1) };
-        let across = |b: &Rect| if vertical { b.y0 <= p.y && p.y <= b.y1 } else { b.x0 <= p.x && p.x <= b.x1 };
-        let end = |b: &Rect| if vertical { b.x1 } else { b.y1 };
-        let start = |b: &Rect| if vertical { b.x0 } else { b.y0 };
-        let a = items.iter().filter(|(_, b)| across(b) && end(b) <= pos).map(|(_, b)| end(b)).fold(lo, f64::max);
-        let z = items.iter().filter(|(_, b)| across(b) && start(b) >= pos).map(|(_, b)| start(b)).fold(hi, f64::min);
-        let before: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (end(b) - a).abs() < 0.5).map(|(i, _)| *i).collect();
-        let after: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (start(b) - z).abs() < 0.5).map(|(i, _)| *i).collect();
-        (!before.is_empty() || !after.is_empty()).then_some((vertical, a, z, before, after))
-    };
-    match (side(true), side(false)) {
-        (Some(v), Some(h)) => Some(if v.2 - v.1 <= h.2 - h.1 { v } else { h }),
-        (v, h) => v.or(h),
-    }
-}
-
-fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
-    const ID: &str = "gap.move";
-    let at = p
-        .get("at")
-        .and_then(Value::as_array)
-        .and_then(|a| Some(Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
-        .ok_or_else(|| bad(ID, "missing at"))?;
-    let sr = spread_param(p, "spread");
-    let (vertical, a, z, before, after) = find_gap(&s.doc()?.doc, sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
-    // `delta` along the gap's axis, or a drag (dx, dy) of which the axis part counts.
-    let delta =
-        p.get("delta").and_then(Value::as_f64).unwrap_or_else(|| p.get(if vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
-    let _ = (a, z);
-    s.edit(|d, _| {
-        let mut n = 0;
-        for (ids, is_before) in [(&before, true), (&after, false)] {
-            for id in ids {
-                let Some(it) = d.item_mut(*id) else { continue };
-                let b = it.bounds();
-                let mut to = b;
-                match (vertical, is_before) {
-                    (true, true) => to.x1 = (b.x1 + delta).max(b.x0 + 1.0),
-                    (true, false) => to.x0 = (b.x0 + delta).min(b.x1 - 1.0),
-                    (false, true) => to.y1 = (b.y1 + delta).max(b.y0 + 1.0),
-                    (false, false) => to.y0 = (b.y0 + delta).min(b.y1 - 1.0),
-                }
-                let m = Affine::translate((to.x0, to.y0))
-                    * Affine::scale_non_uniform(to.width() / b.width().max(1e-9), to.height() / b.height().max(1e-9))
-                    * Affine::translate((-b.x0, -b.y0));
-                if matches!(it.content, Content::Group { .. }) {
-                    it.xf = m * it.xf;
-                } else {
-                    let inner = it.xf.inverse() * m * it.xf;
-                    bake(it, inner);
-                }
-                n += 1;
-            }
-        }
-        Ok(json!({"axis": if vertical { "x" } else { "y" }, "changed": n}))
-    })
-}
-
-/// Clipping Path: trace the graphic (its alpha channel, or edges against a white background) and
-/// give the frame that outline.
-fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
-    const ID: &str = "object.clippingPath";
-    let ids = targets(s, p)?;
-    let edges = match str_param(p, "type").unwrap_or("alpha") {
-        "alpha" => false,
-        "edges" => true,
-        t => return Err(bad(ID, format!("unknown type `{t}` (alpha, edges)"))),
-    };
-    let threshold = p.get("threshold").and_then(Value::as_f64).unwrap_or(25.0).clamp(0.0, 255.0);
-    let tol = p.get("tolerance").and_then(Value::as_f64).unwrap_or(2.0).max(0.1);
-    // Trace each graphic (outside the edit: decoding is the slow part).
-    let mut paths: Vec<(ItemId, designcraft_geom::PathData)> = Vec::new();
-    {
-        let d = &s.doc()?.doc;
-        for id in &ids {
-            let Some(it) = d.item(*id) else { continue };
-            let Some(g) = it.graphic() else { continue };
-            let Some(asset) = d.assets.get(&g.asset) else { continue };
-            let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
-            let (pw, ph) = (px.width() as usize, px.height() as usize);
-            // A grid of at most 400 cells on the long side.
-            let step = (pw.max(ph) as f64 / 400.0).max(1.0);
-            let (w, h) = (((pw as f64) / step).ceil() as usize, ((ph as f64) / step).ceil() as usize);
-            let mask: Vec<bool> = (0..w * h)
-                .map(|i| {
-                    let (x, y) = (((i % w) as f64 * step) as u16, ((i / w) as f64 * step) as u16);
-                    let c = px.sample(x.min(pw as u16 - 1), y.min(ph as u16 - 1));
-                    if edges {
-                        // Un-premultiply over white: anything darker than the threshold is inside.
-                        let a = c.a as f64 / 255.0;
-                        let lum = (0.299 * c.r as f64 + 0.587 * c.g as f64 + 0.114 * c.b as f64) + 255.0 * (1.0 - a);
-                        lum < 255.0 - threshold
-                    } else {
-                        c.a as f64 > threshold
-                    }
-                })
-                .collect();
-            // The tolerance is in image pixels; the grid cells are `step` pixels.
-            let rings = designcraft_geom::trace::trace(&mask, w, h, tol / step, 4.0);
-            if rings.is_empty() {
-                return Err(bad(ID, "nothing to trace (the image is empty at this threshold)"));
-            }
-            let (sx, sy) = (g.size.0 / w as f64, g.size.1 / h as f64);
-            let subpaths = rings
-                .into_iter()
-                .map(|r| {
-                    let pts: Vec<Point> = r.into_iter().map(|q| g.xf * Point::new(q.x * sx, q.y * sy)).collect();
-                    designcraft_geom::path::SubPath::polyline(&pts, true)
-                })
-                .collect();
-            paths.push((*id, designcraft_geom::PathData::new(subpaths)));
-        }
-    }
-    if paths.is_empty() {
-        return Err(bad(ID, "select a frame with a placed graphic"));
-    }
-    s.edit(|d, _| {
-        let n = paths.len();
-        for (id, path) in paths {
-            if let Some(it) = d.item_mut(id) {
-                it.path = path;
-                it.shape = Shape::Path;
-                it.corners = Default::default();
-                if let Content::Graphic(g) = &mut it.content {
-                    g.auto_fit = designcraft_doc::Fitting::None;
-                }
-            }
-        }
-        Ok(json!({"changed": n}))
-    })
-}
-
-fn fitting_mode(s: &str) -> Option<designcraft_doc::Fitting> {
-    use designcraft_doc::Fitting as F;
-    Some(match s {
-        "none" => F::None,
-        "fillProportionally" => F::FillProportionally,
-        "fitProportionally" => F::FitProportionally,
-        "fitContentToFrame" => F::FitContentToFrame,
-        "centerContent" => F::CenterContent,
-        _ => return None,
-    })
-}
-
-/// Frame Fitting Options: auto-fit, fitting, align from, crop amounts.
-fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
-    const ID: &str = "object.fittingOptions";
-    let ids = targets(s, p)?;
-    let fitting = match str_param(p, "fitting") {
-        Some(f) => Some(fitting_mode(f).ok_or_else(|| bad(ID, format!("unknown fitting `{f}`")))?),
-        None => None,
-    };
-    let auto = p.get("autoFit").and_then(Value::as_bool);
-    let align = p.get("align").and_then(Value::as_u64).map(|v| v.min(8) as u8);
-    let crop = match p.get("crop") {
-        Some(Value::Array(a)) if a.len() == 4 => Some([0, 1, 2, 3].map(|i| a[i].as_f64().unwrap_or(0.0))),
-        Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
-        Some(v) => return Err(bad(ID, format!("bad `crop`: {v} (n or [t, l, b, r])"))),
-        None => None,
-    };
-    s.edit(|d, _| {
-        let mut n = 0;
-        for id in &ids {
-            let Some(it) = d.item_mut(*id) else { continue };
-            let r = it.inner_bounds();
-            let Content::Graphic(g) = &mut it.content else { continue };
-            if let Some(a) = align {
-                g.fit_align = a;
-            }
-            if let Some(c) = crop {
-                g.crop = c;
-            }
-            let mode = fitting.unwrap_or(g.auto_fit);
-            if let Some(a) = auto {
-                g.auto_fit = if a {
-                    if mode == designcraft_doc::Fitting::None { designcraft_doc::Fitting::FillProportionally } else { mode }
-                } else {
-                    designcraft_doc::Fitting::None
-                };
-            } else if fitting.is_some() && g.auto_fit != designcraft_doc::Fitting::None {
-                g.auto_fit = mode;
-            }
-            if let Some(xf) = g.fitted(r, mode) {
-                g.xf = xf;
-            }
-            n += 1;
-        }
-        Ok(json!({"changed": n}))
-    })
-}
-
-fn fit(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
-    s.edit(|d, _| {
-        for id in &ids {
-            let Some(it) = d.item_mut(*id) else { continue };
-            let r = it.inner_bounds();
-            let Content::Graphic(g) = &mut it.content else { continue };
-            let (nw, nh) = g.size;
-            let cur = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
-            if mode == "fitFrameToContent" {
-                it.path = shapes::rectangle(cur);
-                continue;
-            }
-            let m = fitting_mode(&mode)
-                .filter(|m| *m != designcraft_doc::Fitting::None)
-                .ok_or_else(|| bad("object.fit", format!("unknown mode `{mode}`")))?;
-            if let Some(xf) = g.fitted(r, m) {
-                g.xf = xf;
-            }
-        }
-        ok()
-    })
-}
-
-pub(crate) trait RemoveKeep {
-    fn remove_item_keep_story(&mut self, id: ItemId) -> Result<Item>;
-}
-
-/// Detach an item without touching story threads (moving between spreads, grouping).
-impl RemoveKeep for Document {
-    fn remove_item_keep_story(&mut self, id: ItemId) -> Result<Item> {
-        let loc = self.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        if loc.path.len() != 1 {
-            return Err(bad("object", "nested items can't be detached"));
-        }
-        let sp = self.spread_mut(loc.spread).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        Ok(Arc::unwrap_or_clone(sp.items.remove(loc.path[0])))
-    }
-}
-
-/// Bounds of each target item (spread space) and the alignment reference rect.
-fn align_reference(d: &Document, ids: &[ItemId], to: &str, key: Option<ItemId>) -> Option<Rect> {
-    let bounds: Vec<Rect> = ids.iter().filter_map(|i| d.item(*i).map(Item::bounds)).collect();
-    let union = bounds.iter().copied().reduce(|a, b| a.union(b))?;
-    let first = ids.first().and_then(|i| d.find(*i))?;
-    let sp = d.spread(first.spread)?;
-    let page = sp.page_at_x(union.center().x).and_then(|pi| sp.pages.get(pi));
-    Some(match to {
-        "keyObject" => key.and_then(|k| d.item(k)).map(Item::bounds).unwrap_or(union),
-        "margins" => page.map(|p| p.margin_rect()).unwrap_or(union),
-        "page" => page.map(|p| p.bounds()).unwrap_or(union),
-        "spread" => sp.bounds(),
-        _ => union,
-    })
-}
-
-fn align(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let edge = str_param(p, "edge").unwrap_or("left").to_string();
-    let to = str_param(p, "to").map(str::to_string).unwrap_or_else(|| if ids.len() > 1 { "selection".into() } else { "page".into() });
-    let key = s.doc()?.selection.key;
-    s.edit(|d, _| {
-        let r = align_reference(d, &ids, &to, key).ok_or_else(|| bad("object.align", "nothing to align"))?;
-        for id in &ids {
-            if Some(*id) == key && to == "keyObject" {
-                continue;
-            }
-            let Some(it) = d.item_mut(*id) else { continue };
-            if it.locked {
-                continue;
-            }
-            let b = it.bounds();
-            let (dx, dy) = match edge.as_str() {
-                "left" => (r.x0 - b.x0, 0.0),
-                "hcenter" => (r.center().x - b.center().x, 0.0),
-                "right" => (r.x1 - b.x1, 0.0),
-                "top" => (0.0, r.y0 - b.y0),
-                "vcenter" => (0.0, r.center().y - b.center().y),
-                "bottom" => (0.0, r.y1 - b.y1),
-                other => return Err(bad("object.align", format!("unknown edge `{other}`"))),
-            };
-            it.xf = Affine::translate((dx, dy)) * it.xf;
-        }
-        ok()
-    })
-}
-
-fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    if ids.len() < 3 && p.get("spacing").is_none() {
-        return Err(bad("object.distribute", "select at least three objects"));
-    }
-    let horizontal = str_param(p, "axis") != Some("vertical");
-    let by_spacing = str_param(p, "by") == Some("spacing") || p.get("spacing").is_some();
-    let fixed = p.get("spacing").and_then(Value::as_f64);
-    s.edit(|d, _| {
-        let mut items: Vec<(ItemId, Rect)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, it.bounds()))).collect();
-        let key = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
-        items.sort_by(|a, b| key(&a.1).total_cmp(&key(&b.1)));
-        let n = items.len();
-        if n < 2 {
-            return ok();
-        }
-        let (first, last) = (items[0].1, items[n - 1].1);
-        let lo = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
-        let hi = |r: &Rect| if horizontal { r.x1 } else { r.y1 };
-        let size = |r: &Rect| hi(r) - lo(r);
-        let mut targets: Vec<f64> = Vec::with_capacity(n);
-        if by_spacing {
-            let total: f64 = items.iter().map(|(_, r)| size(r)).sum();
-            let gap = fixed.unwrap_or_else(|| (hi(&last) - lo(&first) - total) / (n - 1) as f64);
-            let mut pos = lo(&first);
-            for (_, r) in &items {
-                targets.push(pos);
-                pos += size(r) + gap;
-            }
-        } else {
-            let c0 = (lo(&first) + hi(&first)) / 2.0;
-            let c1 = (lo(&last) + hi(&last)) / 2.0;
-            for (k, (_, r)) in items.iter().enumerate() {
-                targets.push(c0 + (c1 - c0) * k as f64 / (n - 1) as f64 - size(r) / 2.0);
-            }
-        }
-        for ((id, r), t) in items.iter().zip(targets) {
-            let delta = t - lo(r);
-            if let Some(it) = d.item_mut(*id) {
-                let v = if horizontal { Vec2::new(delta, 0.0) } else { Vec2::new(0.0, delta) };
-                it.xf = Affine::translate(v) * it.xf;
-            }
-        }
-        ok()
-    })
-}
-
-fn anchor_from(v: &Value) -> Option<designcraft_geom::Anchor> {
-    let pt = |k: &str| -> Option<Point> {
-        let a = v.get(k)?.as_array()?;
-        Some(Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
-    };
-    let p = pt("p")?;
-    let h_in = pt("in").unwrap_or(p);
-    let h_out = pt("out").unwrap_or(p);
-    let smooth = (h_in - p).hypot() > 1e-9 || (h_out - p).hypot() > 1e-9;
-    Some(designcraft_geom::Anchor {
-        p,
-        h_in,
-        h_out,
-        kind: if smooth { designcraft_geom::AnchorKind::Smooth } else { designcraft_geom::AnchorKind::Corner },
-    })
-}
-
-fn path_create(s: &mut Session, p: &Value) -> Result<Value> {
-    let anchors: Vec<designcraft_geom::Anchor> =
-        p.get("anchors").and_then(Value::as_array).map(|a| a.iter().filter_map(anchor_from).collect()).unwrap_or_default();
-    if anchors.len() < 2 {
-        return Err(bad("path.create", "a path needs at least two anchors"));
-    }
-    let closed = bool_or(p, "closed", false);
-    let sr = spread_param(p, "spread");
-    let lid = s.doc()?.active_layer;
-    s.edit(|d, sel| {
-        let id = ItemId(d.alloc());
-        let shape = if anchors.len() == 2 && !closed { Shape::GraphicLine } else { Shape::Path };
-        let mut it = Item::new(id, lid, shape, designcraft_geom::PathData::single(designcraft_geom::SubPath::new(anchors, closed)));
-        it.stroke = Stroke::default();
-        d.insert_item(sr, it, None)?;
-        *sel = Selection::items(vec![id]);
-        Ok(json!({"id": id.0}))
-    })
-}
-
-fn path_append(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = super::id_param(p, "id").ok_or_else(|| bad("path.appendAnchor", "missing id"))?;
-    let a = p.get("anchor").and_then(anchor_from).ok_or_else(|| bad("path.appendAnchor", "missing anchor"))?;
-    s.edit(|d, _| {
-        let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let inv = (d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default()).inverse();
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let sp = it.path.subpaths.last_mut().ok_or_else(|| bad("path.appendAnchor", "empty path"))?;
-        sp.anchors.push(a.transform(inv));
-        if it.shape == Shape::GraphicLine {
-            it.shape = Shape::Path;
-        }
-        ok()
-    })
-}
-
-fn path_close(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = super::id_param(p, "id").ok_or_else(|| bad("path.close", "missing id"))?;
-    s.edit(|d, _| {
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        for sp in &mut it.path.subpaths {
-            sp.closed = true;
-        }
-        if it.shape == Shape::GraphicLine {
-            it.shape = Shape::Path;
-        }
-        ok()
-    })
-}
-
-fn path_move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
-    let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-    let d0 = Vec2::new(f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
-    let handle = str_param(p, "handle").map(str::to_string);
-    s.edit(|d, _| {
-        let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
-        // Spread-space delta → inner-space delta (linear part only).
-        let inv = m.inverse();
-        let dv = (inv * Point::new(d0.x, d0.y)) - (inv * Point::ZERO);
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        for (si, ai) in &which {
-            let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
-            match handle.as_deref() {
-                Some("in") => {
-                    a.h_in += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_out = a.p - (a.h_in - a.p);
-                    }
-                }
-                Some("out") => {
-                    a.h_out += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_in = a.p - (a.h_out - a.p);
-                    }
-                }
-                _ => a.translate(dv),
-            }
-        }
-        if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
-            it.shape = Shape::Path;
-        }
-        ok()
-    })
-}
-
-fn step_and_repeat(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = targets(s, p)?;
-    let (dx, dy) = (f64_or(p, "dx", 12.0), f64_or(p, "dy", 12.0));
-    let rows = p.get("rows").and_then(Value::as_u64).map(|v| v as usize);
-    let cols = p.get("columns").and_then(Value::as_u64).map(|v| v as usize);
-    let count = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as usize;
-    let offsets: Vec<Vec2> = match (rows, cols) {
-        (Some(r), Some(c)) if r * c <= 1000 => (0..r)
-            .flat_map(|i| (0..c).map(move |j| (i, j)))
-            .filter(|&(i, j)| i + j > 0)
-            .map(|(i, j)| Vec2::new(j as f64 * dx, i as f64 * dy))
-            .collect(),
-        _ => (1..=count).map(|k| Vec2::new(k as f64 * dx, k as f64 * dy)).collect(),
-    };
-    s.edit(|d, sel| {
-        let src = d.clone();
-        let mut all = ids.clone();
-        for off in offsets {
-            for id in &ids {
-                let sr = src.find(*id).map(|l| l.spread).unwrap_or(SpreadRef::Doc(0));
-                all.extend(duplicate_from(d, &src, &[*id], sr, off)?);
-            }
-        }
-        *sel = Selection::items(all.clone());
-        Ok(json!({"created": all.len() - ids.len()}))
-    })
 }
 
 #[cfg(test)]

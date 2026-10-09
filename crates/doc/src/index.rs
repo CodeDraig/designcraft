@@ -1,7 +1,7 @@
 //! Index (Window › Type & Tables › Index): page references marked in stories and the generated
 //! index story.
 //!
-//! A page reference is a zero-width [`INDEX_MARK`] in a story; [`Story::index_refs`] holds one
+//! A page reference is a zero-width [`INDEX_MARK`] in a story; [`crate::Story::index_refs`] holds one
 //! [`IndexRef`] per mark in text order (like footnotes and cross-references). Generating the
 //! index composes the document to find each mark's page and writes a story with "Index Title",
 //! "Index Section Head" and "Index Level n" paragraph styles.

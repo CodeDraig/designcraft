@@ -1,5 +1,13 @@
 //! Paragraph → styled, positioned glyphs (before line breaking).
 
+mod cache;
+use cache::shape_cached;
+mod metrics;
+pub use metrics::TypeEnv;
+use metrics::{control_glyph, metrics};
+mod features;
+use features::features_for;
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -40,7 +48,7 @@ pub struct Glyph {
     pub no_break: bool,
     pub locked_advance: bool,
     /// Tate-chu-yoko in a vertical frame: [centre of the group's em along the line from `x`,
-    /// this glyph's left edge across the line from that centre, the em] (see [`collapse_tcy`]).
+    /// this glyph's left edge across the line from that centre, the em] (see `collapse_tcy`).
     pub tcy: Option<[f64; 3]>,
     pub tcy_offset: [f64; 2],
     /// Width of a word space (U+0020) in this glyph's font, size and horizontal scale: the unit of
@@ -343,62 +351,6 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
     }
 }
 
-fn features_for(p: &CharProps) -> Vec<Feature> {
-    let mut v = Vec::new();
-    if !matches!(p.kerning, Kerning::Metrics | Kerning::Optical) {
-        v.extend(feature("-kern"));
-    }
-    if !p.ligatures || p.tracking.abs() > 1e-9 {
-        v.extend(feature("-liga"));
-        v.extend(feature("-clig"));
-    }
-    if p.capitalization == Capitalization::AllCaps {
-        v.extend(feature("case"));
-    }
-    if matches!(p.capitalization, Capitalization::SmallCaps | Capitalization::OpenTypeAllSmallCaps) {
-        v.extend(feature("smcp"));
-    }
-    if p.capitalization == Capitalization::OpenTypeAllSmallCaps {
-        v.extend(feature("c2sc"));
-    }
-    match p.position {
-        Position::OtSuperscript => v.extend(feature("sups")),
-        Position::OtSubscript => v.extend(feature("subs")),
-        Position::OtNumerator => v.extend(feature("numr")),
-        Position::OtDenominator => v.extend(feature("dnom")),
-        _ => {}
-    }
-    let form = match p.glyph_form.as_str() {
-        "ExpertForm" => "expt",
-        "TraditionalForm" => "trad",
-        "SimplifiedForm" => "smpl",
-        "JIS78Form" => "jp78",
-        "JIS83Form" => "jp83",
-        "JIS90Form" => "jp90",
-        "JIS04Form" => "jp04",
-        _ => "",
-    };
-    if !form.is_empty() {
-        v.extend(feature(form));
-    }
-    for f in &p.otf_features {
-        v.extend(feature(f));
-    }
-    let positional = match p.positional_form.as_str() {
-        "Initial" => Some("init"),
-        "Medial" => Some("medi"),
-        "Final" => Some("fina"),
-        "Isolated" => Some("isol"),
-        _ => None,
-    };
-    if let Some(tag) = positional {
-        for form in ["isol", "init", "medi", "fina"] {
-            v.extend(feature(&format!("{}{}", if form == tag { "" } else { "-" }, form)));
-        }
-    }
-    v
-}
-
 fn is_mark(c: char) -> bool {
     unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::NSM || matches!(c, '\u{200C}' | '\u{200D}')
 }
@@ -636,158 +588,6 @@ fn shape_run_raw(
         }
     }
     flush(seg_start, range.end, &seg_face, out);
-}
-
-type WordMap = HashMap<Box<str>, Arc<[ShapedGlyph]>>;
-type WordKey = (u32, bool, bool, String, Option<&'static str>);
-
-/// Shaped words (font units) by (face, vertical, caps, features, language), then text. Lookups
-/// take read locks and misses are shaped outside any lock, so parallel composition doesn't
-/// serialize here.
-static WORD_CACHE: RwLock<Vec<(WordKey, Arc<RwLock<WordMap>>)>> = RwLock::new(Vec::new());
-const WORD_CACHE_MAX: usize = 50_000;
-
-fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
-    if let Some((_, m)) = WORD_CACHE.read().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == key) {
-        return m.clone();
-    }
-    let mut w = WORD_CACHE.write().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, m)) = w.iter().find(|e| e.0 == key) {
-        return m.clone();
-    }
-    if w.len() > 64 {
-        w.clear();
-    }
-    let m = Arc::new(RwLock::new(HashMap::new()));
-    w.push((key, m.clone()));
-    m
-}
-
-/// Shape `src` word by word through a cache (like a browser's word cache): the text is split
-/// after each U+0020 so repeated words are shaped once. Shaping does not cross word spaces in the
-/// scripts we lay out, and clusters stay byte offsets into `src`.
-fn shape_cached(
-    face: &FontFace,
-    src: &str,
-    feats: &[Feature],
-    lang: Option<&'static str>,
-    caps: bool,
-    vertical: bool,
-    (before, after): (&str, &str),
-) -> Vec<ShapedGlyph> {
-    use designcraft_fonts::ShapeContext;
-    let map = |c: char| if caps { c.to_uppercase().next().unwrap_or(c) } else { c };
-    let shape = |s: &str, context: ShapeContext<'_>| {
-        if vertical {
-            designcraft_fonts::shape_vertical(face, s, feats, map, context)
-        } else {
-            designcraft_fonts::shape_with_context(face, s, feats, map, context)
-        }
-    };
-    if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
-        return shape(src, ShapeContext { before, after, language: lang });
-    }
-    let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang));
-    let pieces: Vec<&str> = src.split_inclusive(' ').collect();
-    let mut found: Vec<Option<Arc<[ShapedGlyph]>>> = {
-        let r = words.read().unwrap_or_else(|e| e.into_inner());
-        pieces.iter().map(|p| r.get(*p).cloned()).collect()
-    };
-    let mut fresh: Vec<(Box<str>, Arc<[ShapedGlyph]>)> = Vec::new();
-    for (k, f) in found.iter_mut().enumerate() {
-        if f.is_none() {
-            let g: Arc<[ShapedGlyph]> = shape(pieces[k], ShapeContext { language: lang, ..Default::default() }).into();
-            fresh.push((pieces[k].into(), g.clone()));
-            *f = Some(g);
-        }
-    }
-    if !fresh.is_empty() {
-        let mut w = words.write().unwrap_or_else(|e| e.into_inner());
-        if w.len() + fresh.len() > WORD_CACHE_MAX {
-            w.clear();
-        }
-        w.extend(fresh);
-    }
-    let mut out = Vec::with_capacity(src.len());
-    let mut start = 0;
-    for (piece, glyphs) in pieces.iter().zip(found) {
-        let glyphs = glyphs.unwrap_or_else(|| Arc::from(Vec::new()));
-        out.extend(glyphs.iter().map(|g| ShapedGlyph { cluster: g.cluster + start, ..*g }));
-        start += piece.len();
-    }
-    out
-}
-
-fn metrics(face: &FontFace, p: &CharProps, auto_leading: TypeEnv) -> (f64, f64, f64, f64, f64, f64, f64, f64) {
-    let (size, shift) = effective_size(p, &auto_leading.adv);
-    let k = size / face.upem;
-    let vs = p.v_scale;
-    let leading = match p.leading {
-        Leading::Auto => p.size * auto_leading.auto_leading,
-        Leading::Points(v) => v,
-    };
-    (size, k, face.ascent * k * vs, face.descent * k * vs, leading, face.cap_height * k * vs, face.x_height * k * vs, shift)
-}
-
-/// Auto leading and the document's Advanced Type settings, for shaping.
-#[derive(Clone, Copy, Debug)]
-pub struct TypeEnv {
-    pub auto_leading: f64,
-    pub adv: designcraft_doc::AdvancedType,
-    /// Characters the font lacks are drawn from fallback fonts (else as its .notdef glyph).
-    pub glyph_fallback: bool,
-}
-
-/// Synthesised super/subscript: size and shift from Advanced Type (percent of the font size).
-fn effective_size(p: &CharProps, adv: &designcraft_doc::AdvancedType) -> (f64, f64) {
-    match p.position {
-        Position::Superscript => (p.size * adv.superscript_size / 100.0, p.baseline_shift + p.size * adv.superscript_position / 100.0),
-        Position::Subscript => (p.size * adv.subscript_size / 100.0, p.baseline_shift - p.size * adv.subscript_position / 100.0),
-        _ => (p.size, p.baseline_shift),
-    }
-}
-
-fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, style: u32, byte: usize, ch: char) -> Glyph {
-    let (size, k, ascent, descent, leading, cap, xh, shift) = metrics(face, p, auto_leading);
-    Glyph {
-        face: FaceRef::of(face),
-        gid: face.glyph_for(' '),
-        byte,
-        len: ch.len_utf8(),
-        ch,
-        adv: 0.0,
-        dx: 0.0,
-        dy: 0.0,
-        sx: k * p.h_scale,
-        sy: k * p.v_scale,
-        shift,
-        ascent,
-        descent,
-        leading,
-        cap,
-        xh,
-        size,
-        style,
-        no_break: p.no_break,
-        locked_advance: p.jidori > 0,
-        tcy: p.tate_chu_yoko.then_some([0.0; 3]),
-        tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
-        space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
-        break_after: None,
-        cjk_hang: 0.0,
-        ideographic_space_elastic: false,
-        character_alignment: p.character_alignment,
-        leading_model: p.leading_model,
-        character_direction: p.character_direction,
-        display_char: ch,
-        bidi_offset: 0,
-        bidi_end: 0,
-        allow_kashidas: p.allow_kashidas,
-        safe_tatweel_before: false,
-        shaping_rtl: false,
-        lang: designcraft_doc::language_tag(&p.language),
-        upright: false,
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

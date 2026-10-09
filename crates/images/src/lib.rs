@@ -1,5 +1,5 @@
 //! Placed graphics: format sniffing, sizes and decoding for the renderer and PDF export.
-//! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`psd`] (Photoshop's merged
+//! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or `psd` (Photoshop's merged
 //! composite); SVG is parsed with usvg (text set in the bundled fonts) and rasterised with resvg
 //! for the screen — PDF export draws the same tree as vectors.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
