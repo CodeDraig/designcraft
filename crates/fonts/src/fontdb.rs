@@ -319,6 +319,8 @@ struct ScannedFace {
 /// Process-wide font database: the fonts every document shares (bundled, installed, added), and
 /// each open document's own fonts under its scope (see [`FontDb::scoped`]).
 pub struct FontDb {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    first_lookup_barrier: Option<Arc<std::sync::Barrier>>,
     faces: RwLock<Vec<Arc<FontFace>>>,
     /// Each open document's fonts (its `Document Fonts` folder), by scope.
     scopes: RwLock<HashMap<u32, Arc<[Arc<FontFace>]>>>,
@@ -762,6 +764,8 @@ impl FontDb {
             }
         }
         Self {
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            first_lookup_barrier: None,
             faces: RwLock::new(faces),
             scopes: RwLock::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1242,11 +1246,18 @@ impl ScopedFonts<'_> {
         if let Some(f) = self.find(family, style) {
             return f;
         }
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if let Some(barrier) = &self.db.first_lookup_barrier {
+            barrier.wait();
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.db.load_cataloged(family)
-            && let Some(f) = self.find(family, style)
         {
-            return f;
+            self.db.load_cataloged(family);
+            // Another lookup may have inserted the family while this one was loading it.
+            // Zero newly inserted faces does not mean that the family is unavailable.
+            if let Some(f) = self.find(family, style) {
+                return f;
+            }
         }
         self.find(FALLBACK_FAMILY, style)
             .or_else(|| self.find(FALLBACK_FAMILY, "Regular"))

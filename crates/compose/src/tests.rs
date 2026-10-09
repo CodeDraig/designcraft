@@ -1877,3 +1877,19 @@ fn vertical_lines_fit_the_em_box() {
         assert!((l.baseline - col.y0 - ascent).abs() < 1e-9, "{family}: {} {}", l.baseline, col.y0);
     }
 }
+
+#[test]
+fn first_composition_uses_an_installed_face_without_opening_the_font_menu() {
+    const FAMILY: &str = "Installed Composition Regression";
+    let dir = std::env::temp_dir().join(format!("dc-installed-composition-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bytes = designcraft_fonts::testing::font_with_glyph(FAMILY, &['a', 'b', ' '], 'X').unwrap();
+    std::fs::write(dir.join("installed.ttf"), bytes).unwrap();
+    let db = FontDb::with_font_dirs(vec![dir]);
+    let (mut d, sid, _) = doc_with("ab ab", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..5, |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+    let glyphs: Vec<_> = all_lines(&cs).into_iter().flat_map(|line| &line.glyphs).collect();
+    assert!(!glyphs.is_empty());
+    assert!(glyphs.iter().all(|g| g.face.family == FAMILY));
+}

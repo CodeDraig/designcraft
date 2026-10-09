@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- REVIEW2.1: concurrent first lookups of installed fonts recheck the loaded family before substituting a fallback.
+
 - Review fixes (2026-10-08): protect IDML book chapters from native-format overwrites; confirm unsaved document closes; retain undo after partial script failures; avoid replaying MCP requests after a lost reply; break mixed running-header/cross-reference index recursion; invalidate text composition when the baseline grid changes; deliver browser Save a Copy downloads without marking the document saved.
 
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.

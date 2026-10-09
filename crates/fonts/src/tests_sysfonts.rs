@@ -164,3 +164,21 @@ fn font_menus_group_installed_and_loaded_fonts_without_loading_them() {
     assert_eq!(infos.iter().filter(|i| i.family == "Groups Mincho").count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn simultaneous_first_lookups_both_receive_the_installed_family() {
+    let dir = font_dir("concurrent-first-lookup");
+    let mut db = FontDb::with_font_dirs(vec![dir]);
+    db.first_lookup_barrier = Some(Arc::new(std::sync::Barrier::new(2)));
+    std::thread::scope(|scope| {
+        let regular = scope.spawn(|| db.face(FAMILY, "Regular"));
+        let bold = scope.spawn(|| db.face(FAMILY, "Bold"));
+        for (handle, style) in [(regular, "Regular"), (bold, "Bold")] {
+            let face = handle.join().unwrap();
+            assert_eq!((face.family.as_str(), face.style.as_str()), (FAMILY, style));
+            assert!(!crate::shape(&face, "Installed text", &[], |c| c).is_empty());
+        }
+    });
+    db.first_lookup_barrier = None;
+    assert_eq!(db.face("Missing family", "Regular").family, FALLBACK_FAMILY);
+}
