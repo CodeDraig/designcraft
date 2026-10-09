@@ -2,58 +2,115 @@
 
 DesignCraft is a clean-room, open-source, Rust-native page-layout application targeting Adobe InDesign parity — and superiority (speed, openness, agent control). It runs natively on macOS, Windows and Linux, and on the web via WASM. Siblings with the same conventions: `../drawcraft` (Illustrator-class), `../photocraft` (Photoshop), `../pdfcraft` (Acrobat), `../filmcraft` (Premiere), `../lightcraft` (Lightroom).
 
-## Start every session here
-1. Read `plan/STATUS.md` (current milestone, next task), then the task in `plan/execution-plan.md` and the relevant `plan/architecture.md` section. Behaviour reference: `plan/indesign/*.md` (`11-observed-ui.md` holds measured observations of the running app).
-2. Follow the autonomous operation protocol (`plan/execution-plan.md` §7). Don't stop to ask unless §7 lists the decision as the user's.
+## Failure handling and document preservation
 
-`plan/` is gitignored (local only).
-
-## Never crash
-People trust DesignCraft with their layouts; a crash loses their work. **This outranks feature work**: never ship a feature through a panic path, and fix a crash before building on top of it. Standard: [`craftrules/standards/never-crash.md`](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md).
-- **No panics in non-test code:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`, `unimplemented!`; no `unsafe` (`unsafe_code = "forbid"`). The one exception is a provably infallible literal (a constant regex, `write!` to a `String`): `#[allow(clippy::expect_used)]` + `.expect("why it cannot fail")`.
-- **Errors are `Result<T, E>`** through the crate's error type and `?` (`ok_or(..)?`, `let … else`, `if let`, `map_err` for context). An unfinished feature returns an "unsupported" error. Don't `unwrap_or_default()` where a silent default would corrupt a document; return an error.
-- **Input-derived numbers are hostile** (files, commands, MCP/control params, settings): `get()` instead of `[i]`/`[a..b]`, slice strings at char boundaries, checked/saturating arithmetic for lengths and offsets, no division by zero or NaN casts, cap input-sized allocations.
-- **Bound recursion** (seen-sets or depth limits for nested or cyclic documents). **Locks:** `lock().unwrap_or_else(PoisonError::into_inner)` or an error; thread joins are `Result`s.
-- **Last-resort guard:** escaped panics during command execution and file import/export become an error, never a lost document. It's a safety net, not a licence.
-- **Prove it:** every crash fix lands with a small synthetic regression test that panicked before the fix.
-- Clean crates carry `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]`; new crates start with it. Tests may `unwrap` (`clippy.toml`).
+Changes must not introduce known panic paths in the operation being modified. Invalid input and unsupported operations must return an explicit error rather than silently substituting document data.
+If a reproducible crash prevents completing or verifying the requested change, fix it first and add a regression test. Report unrelated crashes without expanding the task.
+Failed commands and imports must preserve the last valid document state. Do not claim this is verified solely because a panic was caught.
+Follow the repository’s enforced restrictions on panic-producing APIs, indexing, arithmetic, recursion, and allocation.
 
 ## Non-negotiables
-- **Clean-room.** InDesign is installed on the dev machine and may be *observed* black-box: run it, use its UI with synthetic documents, take screenshots (by window id) stored only under `plan/indesign/screenshots/` (never committed). Never read, disassemble or copy anything inside the InDesign bundle (names/listings only), never copy Adobe icons, artwork, presets or wording beyond feature names, never commit files produced by InDesign. Never copy GPL/AGPL/LGPL code (Scribus, LibreOffice, Ghostscript…).
-- **Assets:** no Adobe iconography or images — ever. Every asset is original / OSI / CC0 / redistributable CC (except the ArtCraft trademarks in `docs/brand/`, under `docs/brand/LICENSE-brand.txt`) and has a row in `ASSETS.md` (`cargo xtask assets` enforces it). Prefer art generated in code.
-- **Fonts live in [`storytold/craft-fonts`](https://github.com/storytold/craft-fonts)**, never in this repo: don't commit new font files (the Latin UI/document fonts already in `assets/fonts/` stay). It is an optional build input, never a `Cargo.toml` dependency: `CRAFT_FONTS_DIR=/abs/path/to/craft-fonts cargo build` makes `crates/fonts/build.rs` embed its fonts as `designcraft_fonts::CRAFT_FONTS` (Japanese: BIZ UDPGothic for the UI, Mincho first for document text; web builds embed BIZ UDPGothic Regular only). Unset, `CRAFT_FONTS` is empty and the app uses its bundled and system fonts; code and tests must work that way (tests on its glyphs skip). Releases build with it. Standard: [craftrules `standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md).
-- **Shared test corpora.** Real-file test oracles (Photoshop-authored PSDs, etc.) live in [`storytold/photocraft-corpus`](https://github.com/storytold/photocraft-corpus), explained in [craftrules `standards/test-corpora.md`](https://github.com/storytold/craftrules/blob/main/standards/test-corpora.md). Never commit large binary fixtures to this repo; fetch them pinned by commit and sha256-verified, as PhotoCraft does with `cargo xtask corpus`.
-- **Everything is a command.** User-visible behaviour = a command in `crates/engine/src/cmd/*` (id, label, menu path, shortcut, params doc, `enabled`, `run`) + tests. Tools emit commands (Begin/Preview/Commit). UI-only commands live in `crates/ui-egui/src/menus.rs` (`UI_COMMANDS`). The control channel and MCP reach all of them.
-- **Layering** is enforced by `cargo xtask layers`. Nothing below L6 depends on egui/eframe/winit/rfd. The UI crate is swappable.
-- **The UI is thin**: panels read engine state and act through `app.run(id, params)`. Colours come from `theme::Tokens`.
-- **Rust only** (no handwritten JS/TS). **Never break wasm** (`cargo xtask wasm`).
-- **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, assets, layers, wasm). One task id per commit (`M2.1: type tool caret navigation`).
+
+- **Expose application operations as commands.** Implement document operations in
+  `crates/engine/src/cmd/*`. Each command declares its ID, label, menu path, shortcut
+  where applicable, parameters, availability check (`enabled`), and implementation
+  (`run`), with tests for its behavior. Menus, panels, tools and automation must use
+  these commands to perform the same operation. Interactive tools use Begin/Preview/Commit
+  stages to support previews, cancellation and a committed edit.
+
+- **Keep interface commands accessible to agents.** Register UI operations, such as
+  zooming or arranging panels, in `UI_COMMANDS` in `crates/ui-egui/src/menus.rs`.
+  Both engine and UI commands must be discoverable and callable through the running
+  app's control channel and connected MCP. UI commands require the application UI;
+  they are unavailable in headless MCP. “UI-only” identifies the implementation's
+  location and runtime requirement, not a restriction to human use.
+
+- **Keep the engine independent of the GUI stack.** Crates below the L6 UI layer
+  must not depend on `egui`, `eframe`, `winit` or `rfd`. Keep windowing, widgets and
+  native file dialogs in the UI layer; pass their results to the engine. Follow the
+  dependency boundaries checked by `cargo xtask layers`. This allows headless use
+  and replacement of the frontend without moving document behavior into a new UI.
+
+- **Put document behavior in the engine and presentation behavior in the UI.**
+  Panels read engine state and invoke `app.run(id, params)` for operations; they
+  must not independently implement document mutation, validation or undo behavior.
+  Focus, scrolling, dialog state and other presentation logic belong in the UI.
+  Use `theme::Tokens` for application-interface colours. Document artwork and
+  user-selected document colours retain their own values.
+
+- **Implement application behavior in Rust.** Do not add handwritten JavaScript
+  or TypeScript. Toolchain-generated browser glue is permitted. Existing build,
+  packaging and development scripts are outside the application-language restriction.
 
 ## Running and looking at the app
-- `cargo run --release -p designcraft -- --sample --control 7979` (sample magazine + control channel).
-- Drive it: JSON lines on `127.0.0.1:7979`, e.g. `{"id":1,"method":"engine.execute","params":{"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}}` then `{"id":2,"method":"ui.screenshot","params":{"path":"/tmp/shot.png"}}`. Methods: `crates/ui-egui/src/control.rs`, docs: `docs/control-protocol.md`.
-- **For UI work, look at the result** (take `ui.screenshot`, read the PNG) and compare with `plan/indesign/02-ui-ux.md` / `11-observed-ui.md`. If no frame is presented (screen locked) use `ui.render` or `designcraft-cli run --sample --all-pages DIR`.
-- Headless: `designcraft-cli run --sample --cmd 'frame.create={"rect":[0,0,100,100]}' --export out.png`.
-- Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`.
-- Parallel agents: separate `CARGO_TARGET_DIR` per agent; edit only the crates you own; delete your target dir when done (disk).
 
-## Roadmap
-`ROADMAP.md` (committed) tracks status, milestones and estimates. Update it whenever a milestone task lands.
+Run these commands from the repository root. Cargo builds and runs the requested
+binary; the examples do not require `designcraft-cli` to be installed on PATH.
 
-## Contributor credits (About window)
+- **Launch the desktop app with the sample magazine and control server:**
 
-- About ▸ Contributors/Models are compiled into the binary from `contributors/contributors.json`
-  (commit stats; generated, never hand-edit) and `contributors/people.toml` (names people chose for
-  themselves). See `docs/contributors.md`.
-- **Agents working for a contributor:** when you prepare a PR, check whether your human's GitHub
-  username has a `[people.<username>]` entry in `contributors/people.toml`. If not, ask them once
-  whether they want to be credited by more than their username: a real name, a display name, and/or
-  their public GitHub profile name (`sync_github_name = true`). If yes, add **only their own** entry
-  (copy the template at the top of the file, or run
-  `python3 ../../craftrules/scripts/contributors.py --add-me . --real-name "…" --sync-github-name`)
-  and include it in their PR, committed as them. If no, change nothing: they are credited as
-  `@username` anyway.
-- Never add, edit, guess or copy anyone else's entry or name (not from git config, commit authors or
-  GitHub profiles). Never hand-edit `contributors.json`.
-- Maintainers refresh the stats with `python3 ../../craftrules/scripts/contributors.py .` (it also
-  re-verifies who wrote each `people.toml` entry; `--check` only verifies).
+  ```sh
+  cargo run --release -p designcraft -- --sample --control 7979
+  ```
+
+- **Control the running app:** send newline-delimited JSON over TCP to
+  `127.0.0.1:7979`. For example, create a text frame and then capture the window:
+
+  ```json
+  {"id":1,"method":"engine.execute","params":{"command":"frame.create","params":{"rect":[36,36,300,200],"content":"text"}}}
+  {"id":2,"method":"ui.screenshot","params":{"path":"/tmp/designcraft-window.png"}}
+  ```
+
+  Inspect each response for errors. Methods are implemented in
+  `crates/ui-egui/src/control.rs` and documented in `docs/control-protocol.md`.
+  Choose output paths that do not overwrite files you need to preserve.
+
+- **Verify UI changes with a whole-window image:** request `ui.screenshot`, then
+  open and inspect the resulting PNG. This captures the interface, including
+  panels and dialogs. It can time out when no frame is presented, such as when
+  the screen is locked or the window is hidden. The old comparison references
+  under `plan/indesign/` are absent from this checkout; do not claim comparison
+  against them unless those files are available and have actually been inspected.
+
+- **Render the whole UI offscreen when a window screenshot is unavailable:**
+  create a JSON-lines script that reproduces the state to inspect, ending with
+  a screenshot instruction such as:
+
+  ```json
+  {"shot":"/tmp/designcraft-offscreen.png"}
+  ```
+
+  Run it with:
+
+  ```sh
+  cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl
+  ```
+
+  This uses the offscreen wgpu test harness and requires a working wgpu backend.
+  It creates a separate app instance with the sample document by default; it does
+  not capture the current desktop session. The script accepts control-channel
+  requests, `{"steps": n}` to advance frames, and `{"shot": "/absolute/path.png"}`
+  to save the UI. A first line of `{"empty": true}` disables the initial sample.
+  Inspect the output for errors and open the saved PNG to verify the result.
+
+- **Inspect document output separately from the interface:** `ui.render` renders
+  a document page from the running app without requiring a presented frame. It
+  does not capture panels, dialogs or editing overlays. For an independent
+  headless document render, use:
+
+  ```sh
+  cargo run --release -p designcraft-cli -- run --sample \
+    --cmd 'frame.create={"rect":[0,0,100,100]}' --export out.png
+  cargo run --release -p designcraft-cli -- run --sample --all-pages out-pages
+  ```
+
+  The second command writes `page-001.png`, `page-002.png`, and so on. These page
+  renders verify document appearance, not UI appearance or interaction.
+
+- **Shell commands:** do not assume `mv` or `cp` is aliased. Check with `type mv cp`
+  if behavior is unclear; do not add `-f` merely to bypass an assumed alias.
+
+- **When using parallel agents:** assign separate `CARGO_TARGET_DIR` values and
+  explicit file/crate ownership. Only remove a target directory after verifying
+  that it was created exclusively for that agent's disposable build output and
+  that no build is still using it. Do not remove shared or pre-existing targets.

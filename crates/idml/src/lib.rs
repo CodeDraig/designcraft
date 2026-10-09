@@ -24,17 +24,23 @@
 //! linked), stories with paragraph/character style ranges and local overrides, special
 //! characters and breaks, and text threading.
 //!
-//! ## TODO (ignored on import / not written on export)
-//! - Tables, footnotes, anchored/inline objects, notes, tracked changes, hyperlinks, index and
-//!   cross-reference markers, text variables, conditions, XML structure (`XML/*` parts).
-//! - Guides, page-item overrides of parent items (only the page's `OverrideList` is read),
-//!   parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid layout.
-//! - Nested/GREP/line styles, bullets & numbering details (bullet glyph, number format), OpenType
-//!   feature flags, paragraph borders, grid alignment, column rules, custom dashed stroke styles.
-//! - Mixed inks, gradient stop opacity and gradient feathers, effects other than drop shadow and
-//!   basic feather, EPS/PDF/AI placed graphics (imported as images when the data is available),
-//!   clipping paths, compound-path fill rules.
-//! - Unknown elements are ignored; nothing is preserved opaquely for round-trip yet.
+//! Additional implemented interchange includes tables and table/cell styles, footnotes,
+//! anchored objects, cross-reference/index markers, conditions, nested/GREP/line styles,
+//! OpenType flags, paragraph borders, PDF graphics, and CJK/Arabic attributes. See the
+//! import/export submodules and `tests.rs` for the supported mappings and round-trip cases.
+//!
+//! ## Interchange limits
+//! This is a supported subset, not lossless preservation of every IDML feature. In particular:
+//! - Editorial notes and text-variable instances are skipped on import; tracked-change history
+//!   is not exported (`TrackChanges` is written as false).
+//! - Page guides are not imported; exported page `OverrideList` values are empty. Parent-page
+//!   relationships do not imply complete preservation of local override semantics.
+//! - XML import/export commands in the engine do not establish IDML `XML/*` structure support.
+//! - CJK mojikumi tables and kinsoku priorities are preserved, but composition does not execute
+//!   their spacing/priority policies. Other CJK/Arabic compatibility limits are documented in
+//!   `docs/cjk-typography.md` and `docs/arabic-typography.md`.
+//! - Unknown elements are ignored; there is no opaque round-trip preservation. Support for an
+//!   engine feature must be checked separately in both IDML import and export adapters.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod arabic;

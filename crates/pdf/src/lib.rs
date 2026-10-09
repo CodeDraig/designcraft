@@ -19,10 +19,13 @@
 //!   right characters), so text is selectable and searchable.
 //! - **Marks:** crop marks, bleed marks and a page-information line, drawn in `[Registration]`.
 //! - **Standards:** PDF/A-2b through krilla's validator. PDF/X-4 writes PDF 1.6 with trim/bleed
-//!   boxes, but the PDF/X output intent and identification are not written yet (krilla 0.8 has no
-//!   PDF/X support) — the export report says so.
+//!   boxes, then adds a Generic CMYK output intent and PDF/X identification through `pdfx`.
+//!   Built-in checks produce export warnings; these are not certified conformance validation.
+//! - **Structure and interaction:** tagged text/figures, bookmark outlines, hyperlink annotations,
+//!   form fields and optional media embedding (forms/media are omitted from PDF/X output).
 //!
-//! Not yet: tagged PDF, bookmarks, hyperlinks, overprint, layers as optional content.
+//! Not yet: overprint export and document layers as optional content. Placed-PDF layer choices
+//! are rendered into images rather than exported as switchable layers.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
@@ -44,8 +47,8 @@ pub enum Standard {
     /// Plain PDF 1.7.
     #[default]
     None,
-    /// PDF/X-4 (PDF 1.6, trim/bleed boxes). TODO: OutputIntent + GTS_PDFXVersion once krilla
-    /// supports PDF/X.
+    /// PDF/X-4 (PDF 1.6, trim/bleed boxes, output intent and GTS_PDFXVersion).
+    /// Built-in checks report warnings; certified conformance validation remains open.
     PdfX4,
     /// PDF/A-2b (archival; validated by krilla).
     PdfA2b,

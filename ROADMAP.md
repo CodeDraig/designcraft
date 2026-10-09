@@ -15,7 +15,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
-## Status (2026-10-01)
+## Status (reconciled against source, 2026-10-09)
+
+This inventory describes implemented code, not a fresh runtime or InDesign acceptance run.
+The remaining-work section below separates implementation gaps from validation work.
 
 **Working today**
 - Document model: facing/non-facing spreads, parent pages with page-number markers, sections, layers, frames (text / graphic / unassigned), threaded stories, paragraph/character/object styles with based-on, swatches (process/spot/tints/gradients), corner options, text wrap, drop shadow, opacity/blend.
@@ -24,7 +27,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - UI (egui): application bar + menus, Control panel (object and text modes), Tools panel with flyouts, document tabs, rulers, pasteboard, guides (margins, columns, bleed, baseline grid), frame edges, selection handles, text ports and threads, Properties / Pages / Layers dock, Swatches, Styles, Character, Paragraph, Stroke, Text Wrap panels, New Document and Preferences dialogs, Quick Apply (⌘Return), 4 brightness themes.
 - Pen tool, Direct Selection anchor/handle editing, rotate from corners, Rotate/Scale/Shear tools, Eyedropper, snapping & smart guides, Align/Distribute, Find/Change (text + GREP), Story Editor, Paragraph Style Options, Effects panel, hidden characters, native macOS menu bar, measured InDesign 2026 look (Medium Dark): Properties sections per selection state, 21 pt spinner fields with arithmetic, Contextual Task Bar, inverse (black) text selection, Pages panel with drag-and-drop reorder / parent apply, Layers panel with per-object rows.
 - Tools: Selection (click, marquee, move, Alt-duplicate, resize handles), Direct Selection, Type (draw frame, click caret, select, type), Rectangle/Ellipse/Polygon (+ frame variants), Line, Hand, Zoom.
-- PDF export (krilla): real selectable text with embedded font subsets, DeviceCMYK/RGB + spot Separations, bleed boxes, crop/bleed marks + page info, pages or spreads, PDF/A-2b (PDF/X-4 output intent pending) — `file.exportPdf`, File › Export PDF…, `designcraft-cli run --export out.pdf`.
+- PDF export (krilla): real selectable text with embedded font subsets, DeviceCMYK/RGB + spot Separations, bleed boxes, crop/bleed marks + page info, pages or spreads, PDF/A-2b and PDF/X-4 with output intent and built-in checks (certified validation remains open) — `file.exportPdf`, File › Export PDF…, `designcraft-cli run --export out.pdf`.
 - IDML interchange (`designcraft-idml`): export and import of swatches, styles, fonts, preferences, parent spreads, spreads/pages, frames, groups, images (embedded or linked), formatted threaded stories — opens in InDesign 2026 and round-trips InDesign-exported files (`file.exportIdml`, `file.openIdml`, File → Export IDML…, CLI `--in x.idml` / `--export x.idml`).
 - Tables (M8): tables anchored in stories (header/footer/body rows, merged cells, per-edge strokes, fills + alternating fills, insets, vertical justification, at-least/exact row heights); composed into the text column (columns scale to fit, rows break across columns/frames with repeating headers/footers, overset); rendered, exported to PDF (real text) and IDML (export + import); Table menu, Table panel, Create Table dialog, caret/typing/Tab navigation and cell selection in cells; `table.*` commands.
 - Hyperlinks (text or frames → URL / e-mail / page) and bookmarks, exported as PDF link annotations and outline.
@@ -50,7 +53,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Tagged PDF (`file.exportPdf {tagged}`, on by default from the UI): structure tree with stories as paragraphs in reading order, figures carrying their alt text, parent-page items and printer's marks as artifacts.
 - Global Light (`object.globalLight`, `globalLight` on drop/inner shadows; Use Global Light in the Effects panel) and Generate Static Caption (`object.caption`: template over name, path, alt text, label, effective ppi, dimensions, format; any side, offset, style).
 - Control panel scale X/Y, rotation and shear fields (`transform.info`, absolute `transform.set {scaleX, scaleY, rotation, shear}` about the reference point) and Preferences › Transformations are Totals for nested objects and placed graphics.
-- Variable fonts: each named instance is a style (Font menu, shaping with feature variations, metrics, outlines) and embeds at its axis settings in PDF; free axis sliders still to come.
+- Variable fonts: each named instance is a style (Font menu, shaping with feature variations, metrics, outlines) and embeds at its axis settings in PDF; arbitrary axis sliders are available in the Character panel.
 - Object ▸ Select (first/next above, next/last below, container, content, previous/next in group), full Object ▸ Convert Shape (`object.convertShape`), Table ▸ Split Cell Horizontally/Vertically.
 - Attributes panel (`object.attributes`: Overprint Fill/Stroke/Gap, Nonprinting), with Overprint Gap in Overprint Preview and IDML.
 - Page Numbering View (Preferences: section or absolute): page labels everywhere follow it; Go to Page takes section names, numbers or `+n`.
@@ -68,7 +71,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Place Excel workbooks (.xlsx): the first worksheet's used range becomes a table (shared/inline strings, numbers, booleans).
 - Object Library (`library.new/open/add/place/remove/list/json/close`, Library panel): `.dclib` files of snippets that keep stories, styles, swatches and images.
 - Ink Manager (`ink.list`, `ink.options`; Swatches panel menu): All Spots to Process, per-ink conversion and ink aliases in PDF output; IDML ConvertToProcess/AliasInkName.
-- Appearance of Black complete: Printing/Exporting rich black for RGB output (PNG), Overprint [Black] Swatch at 100% (document, IDML OverprintBlack).
+- Appearance of Black: Printing/Exporting rich black for RGB output (PNG), Overprint [Black] Swatch at 100% (document, IDML OverprintBlack).
 - Hyperlinks and Bookmarks panels (Window ▸ Interactive): new from the selection, edit (`hyperlink.edit`), go to source (`hyperlink.goToSource`), rename bookmarks (`bookmark.rename`), go to page, delete.
 - Nested line styles (`nestedLineStyles` paragraph attribute, Paragraph Style Options › Drop Caps and Nested Styles, IDML AllNestedLineStyles): the first lines restyle until the line breaks settle.
 - User dictionary hyphenation exceptions (`hyphenation.addException/removeException/list`, Edit ▸ Spelling ▸ User Dictionary): `ex~am~ple` breaks only at `~`, a plain word never hyphenates.
@@ -94,11 +97,11 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Content Collector and Placer tools (B; `conveyor.collect/place/list/clear`): copies of objects (with stories, styles, images) ride a conveyor between pages and documents; Alt-click keeps them on it.
 - Linked stories (Edit ▸ Place and Link, `story.placeAndLink/links/updateLink/unlink`): child stories copy a parent, show out of date in the Links panel and update.
 - Edit ▸ Menus (`window.hideMenuItem`): hide menu items; menus with hidden items end in Show All Menu Items.
-- View ▸ Separations Preview (`view.separations`): one process plate as ink density, or areas over an ink limit in red (a GCR preview of the rendered view; spot plates and the flattener preview aren't there).
+- View ▸ Separations Preview (`view.separations`): one process plate as ink density, or areas over an ink limit in red (process plates and an ink-limit view; spot plates remain absent). Flattener Preview separately highlights objects involving transparency.
 - Separations Preview plates now come from each object's own colour (CMYK as authored; RGB and images through the colour settings, images via a cached 17³ table), so pure black shows only on the black plate.
 - Language (Character panel ▸ Language, `type.char {language}`): text in other languages isn't hyphenated or spell-checked with the English dictionaries, typographer's quotes follow the language (German „…“, French and Russian «…», Swiss, Spanish, Dutch, Nordic, Japanese and Traditional Chinese 「…」, Simplified Chinese “…”), the font's localized forms (OpenType `locl`: Turkish i, Bulgarian Cyrillic, Japanese / Chinese / Korean glyph variants) follow it too, and so does the fallback for CJK characters the font lacks (with Draw Missing Glyphs from Fallback Fonts on): Japanese, Simplified Chinese, Traditional Chinese and Korean each try their own installed system fonts (Japanese starts with the craft-fonts Japanese faces, Mincho first, when built with them; Hangul, kana and Bopomofo pick their language's fonts whatever the language). Language names from IDML keep their spelling; locale codes as InDesign writes them for some languages (`de_DE_2006`, `nl_NL_2005`; any `ll`, `ll_CC`, `ll-CC`) are their language and region for all of the above, and Chinese is also recognised in its common spellings ("Simplified Chinese", "Chinese (Traditional)", `zh_CN`, `zh-Hant`). Hyphenation dictionaries for other languages aren't bundled yet.
 - Books (`book.new/open/add/remove/list/styleSource/paginate/syncStyles/exportPdf`, Book panel): `.dcbook` files, continuous page numbering, style sync from a style source, one merged PDF.
-- Track Changes (`changes.track/list/acceptAll/rejectAll`, Type ▸ Track Changes): typing is marked added (highlighted on screen), deletions are kept but hidden from layout and exports until accepted or rejected. Per-change accept/reject and authors aren't there yet.
+- Track Changes (`changes.track/list/acceptAll/rejectAll`, Type ▸ Track Changes): typing is marked added (highlighted on screen), deletions are kept but hidden from layout and exports until accepted or rejected. Per-change accept/reject is implemented (see below); author attribution remains absent.
 - Track Changes: per-change Accept / Reject (`changes.accept`, `changes.reject`) and a Track Changes panel listing every change.
 - Move table rows and columns (`table.moveRow`, `table.moveColumn`, Table panel buttons; with whole rows or columns selected, drag them with the Type tool — `table.dropCells`).
 - Object States (`states.create/show/rename/release/list`, Object States panel): multi-state objects show one state on screen and in PDF.
@@ -139,11 +142,11 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Define Lists: named numbered lists that continue across stories in page order (`list.define`, paragraph `listName` / `startAt`), round-tripped through IDML; `null` in `type.para` / `type.char` now removes an override.
 - View › Overprint Preview (⌥⇧⌘Y): overprinting fills, strokes and 100% [Black] text mix with what's beneath on screen.
 - Type on a Path (⇧T tool, `type.onPath`): a story along any line, curve or shape on screen and in PDF; Type on a Path Options (start, flip, baseline/ascender/descender/centre) and Delete Type from Path. Round-trips through IDML as TextPath; on-path caret drawing is still to come.
-- Preferences › Appearance of Black: 100% K on screen accurately (dark grey) or as rich black (`window.richBlack`); the printing/export side is still to come.
+- Preferences › Appearance of Black: 100% K on screen accurately (dark grey) or as rich black (`window.richBlack`); rich-black RGB output is available through `richBlackOutput`; PDF overprint is not exported.
 - Spreads of up to 10 pages: Add to Previous Spread and Allow Spread to Shuffle (Pages panel; `layout.pages.toSpread`, `layout.spreadShuffle`); inserted pages go around kept spreads.
 - Page tool (⇧P) and `layout.pageSize`: pages of their own size (or a preset); the spine stays put and objects keep their place on their page.
 - File › Print (⌘P): printer, copies, page range, spreads, marks, bleed; printed as PDF through the system spooler (`file.print`, `file.printers`, `dryRun` for agents). Shortcuts now act like choosing the menu item (dialogs open), and UI commands win shortcut ties (⌘N opens New Document).
-- Nested styles (through/up to N sentences, words, characters, letters, digits, tabs, breaks, spaces or given characters) and GREP styles (regex → character style), edited in Paragraph Style Options and composed under local formatting; `ui.dialog.open` for agents. Nested line styles are still to come; nested and GREP styles round-trip through IDML.
+- Nested styles (through/up to N sentences, words, characters, letters, digits, tabs, breaks, spaces or given characters) and GREP styles (regex → character style), edited in Paragraph Style Options and composed under local formatting; `ui.dialog.open` for agents. Nested line styles are also implemented; nested, line and GREP styles round-trip through IDML.
 - Table and cell styles (round-trip through IDML): cell styles (fill, insets, vertical justification, strokes, paragraph style) and table styles (region cell styles, border, alternating rows, spacing); apply from the Table panel, edits re-apply to every user; `style.cell.*`, `style.table.*`.
 - Style groups: paragraph and character styles shown in group folders, Move to Group (new, existing, none); `style.group` renames every use (styles, stories, table cells, footnotes, object styles).
 - Scrubby zoom: drag the Zoom tool left or right to zoom continuously around the press point.
@@ -162,7 +165,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Make / Release Compound Path (⌘8; nested paths become holes), Create Outlines (⇧⌘O; one path per text colour), Scissors tool (C) with `path.split`.
 - Transform Again / Individually / Sequence Again (⌥⌘3; a moved copy repeats like Step and Repeat), Clear Transformations; Layers: Merge, Delete Unused, Hide/Lock Others, Show/Unlock All; Break Link to Style (paragraph and character).
 - Floating panels: tear a panel off the dock (its float button, or drag its header away) into a movable, resizable window; Dock puts it back; positions persist; `window.floatPanel` / `window.dockPanel`.
-- Place SVG (vector in PDF export via krilla-svg, resvg on screen, text in the bundled fonts), Photoshop (.psd/.psb composite in its colour mode — Bitmap, Grayscale, Duotone, Indexed, RGB, CMYK, Lab, 8/16-bit — with merged transparency; extra alpha and spot channels don't change the image), BMP, and Illustrator files saved with PDF compatibility (.ai). New `designcraft-images` crate (L2) for sniffing, sizes and decoding. EPS is still missing.
+- Place SVG (vector in PDF export via krilla-svg, resvg on screen, text in the bundled fonts), Photoshop (.psd/.psb composite in its colour mode — Bitmap, Grayscale, Duotone, Indexed, RGB, CMYK, Lab, 8/16-bit — with merged transparency; extra alpha and spot channels don't change the image), BMP, and Illustrator files saved with PDF compatibility (.ai). New `designcraft-images` crate (L2) for sniffing, sizes and decoding. EPS placement uses its TIFF preview or a placeholder; PostScript interpretation remains absent.
 - View › Display Performance: Fast (grey boxes, no effects, ⌥⇧⌘Z), Typical (72 ppi proxies, ⌥⌘Z), High Quality (⌥⌘H, our default — the renderer is fast enough).
 - OpenType menu (Character panel): discretionary ligatures, fractions, ordinal, swash, titling, contextual alternates, slashed zero, the four figure styles and stylistic sets 1–20; `type.openType`; mapped to IDML's OTF attributes.
 - Add Anchor Point (=), Delete Anchor Point (-) and Convert Direction Point (⇧C) tools (click toggles smooth/corner, drag pulls out handles), with `path.addAnchor`, `path.deleteAnchor`, `path.convertAnchor`.
@@ -175,19 +178,45 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Menus expose the engine's features (TOC, numbering & sections, text variables, hyperlinks, cross-references, footnotes, step and repeat, spelling, fitting/content, effects, Data Merge, Preflight, EPUB); any menu command with parameters gets a dialog generated from its parameter documentation.
 - Table of contents (generate/update, dot leaders) and text variables (running headers, last page number, chapter number, file name, dates, custom) resolved per page.
 - Soft effects: blurred drop shadow, inner shadow, outer glow, basic feather.
-- ~200 commands, all reachable through the JSON control channel; headless CLI rendering to PNG.
+- Registered engine commands, all reachable through the JSON control channel; headless CLI rendering to PNG.
 - MCP server (`designcraft-cli mcp [--connect PORT]`, docs/mcp.md): headless engine or the running app; commands, batch, document/story inspection, page renders as images, window screenshots, pointer/keyboard/dialog input.
 - Web build (`apps/designcraft-web`, trunk): the same UI on WebGPU with a WebGL2 fallback; open/place via the browser file picker or drag-and-drop, save/export as downloads.
 
-**Next (in order):** books · New Window / split view · Ink Manager and Separations Preview · XML structure, tags and export · buttons and forms · PDF/X-4 output intent (needs krilla support) · EPS place.
+## Remaining work (source review, 2026-10-09)
 
-## How far from full parity (estimate, 2026-10-04)
+The former “Next” list has landed: books, New Window/split view, Ink Manager, process
+Separations Preview, XML commands, buttons/forms, PDF/X-4 output intent and EPS proxy placement
+all have implementations. Their remaining limits are listed below; this is not a new priority order.
+
+| Area | Implemented boundary / remaining work | Source |
+|---|---|---|
+| CJK typesetting | Foundations largely implemented; Japanese composers, executed mojikumi tables and kinsoku priorities, full inline annotations, grids and feature-set UI remain planned | [Phases and status](docs/cjk.md#phases); [composition limits](docs/cjk-typography.md#unfinished-behavior) |
+| Arabic typography | Vendor justification/diacritic presets, richer elongation and RTL compatibility remain incomplete | [Remaining limitations](docs/arabic-typography.md#remaining-limitations) |
+| PDF production | Output intent and PDF/X identification are written; certified PDF/X-4 validation remains open. Overprint export is absent; optional-content export of document layers is not implemented | [PDF/X processing](crates/pdf/src/pdfx.rs), [export integration](crates/pdf/src/export.rs), [overprint warning](crates/pdf/src/export/items.rs) |
+| EPS | Bounding box and TIFF preview/placeholder placement work; no PostScript interpreter | [EPS decoder](crates/images/src/eps.rs) |
+| Placed layout pages | IDML/native pages can be placed; INDD parsing is unsupported | [Placement](crates/engine/src/cmd/file/placement.rs) |
+| Media | Posters and PDF/EPUB media export exist; in-app playback remains absent | [Media commands](crates/engine/src/cmd/media.rs) |
+| Localization | Translation coverage is partial, with English fallback | [Interface translations](crates/ui-egui/src/i18n.rs) |
+| Tables | Table/cell styles and graphic cells exist; cell text rotation is stored but not composed, and diagonal cell strokes remain absent | [Cell model](crates/doc/src/table.rs), [table composition](crates/compose/src/table.rs) |
+| Preview/editing depth | Spot separation plates and on-path caret drawing remain absent; dialog/panel fidelity still needs comparison | [Process preview](crates/render/src/preview.rs), [selection overlays](crates/ui-egui/src/canvas/text_selection.rs) |
+| Performance/interchange | Story caching, parallel composition and damage-region repaint exist; finer-grained incremental composition, GPU rasterization and broader IDML/PDF corpus hardening remain roadmap work | [Composition cache](crates/compose/src/cache.rs), [renderer](crates/render/src/lib.rs) |
+
+The local-only `plan/STATUS.md`, `plan/execution-plan.md` and `plan/architecture.md` referenced
+by AGENTS.md were absent from this checkout during reconciliation. Their task acceptance criteria
+could not be checked; the milestone inventory below does not certify them complete.
+
+## Historical parity estimate (2026-10-04)
+
+The estimates in this section are retained as historical planning context, not a current
+completion forecast. They were not remeasured in the 2026-10-09 source review and do not
+account reliably for the detailed CJK/Arabic backlog. The breadth score is a catalogue
+classification, not proof of complete options, interchange or visual fidelity.
 
 **Breadth: ~99% weighted** (P0 core 99%, P1 100%, P2 97%) over the 275 features of the InDesign catalogue, scored
 row by row in [docs/parity.md](docs/parity.md) (`cargo xtask parity` recomputes it). Many features scored done still
-lack some of InDesign's options or dialog details, so **overall parity including depth is about 83%**.
+lack some of InDesign's options or dialog details, the historical estimate put **overall parity including depth at about 83%** (not measured in this review).
 
-**Remaining work: about 170 wall-clock hours of a single Claude Opus 5.5 agent** (±30%), or roughly 60–85 hours with
+**Historical remaining-work estimate: about 170 wall-clock hours of a single Claude Opus 5.5 agent** (±30%), or roughly 60–85 hours with
 four agents in parallel on separate crates:
 
 | Work | Estimate |
@@ -208,22 +237,27 @@ Every command is reachable from `designcraft-cli` (`run`, `script` with `$N.path
 running window, `describe`, `commands`), from MCP (`designcraft-cli mcp`, tools including `execute` and `batch` with the
 same references), and from the app's JSON control channel. See [docs/agents.md](docs/agents.md).
 
-## Milestones
+## Milestone implementation inventory (2026-10-09)
+
+Unfinished items are collected in the separate [milestone to-do list](TODO.md).
+
+“Implemented” below means the named capability exists in source. It does not mean every
+original milestone acceptance criterion or InDesign option has been verified.
 
 | # | Milestone | State |
 |---|---|---|
-| M0 | Skeleton + vertical slice | ✅ |
-| M1 | Selection, transform, layers, pages, MCP | in progress |
-| M2 | Type I (Type tool, threading, Character/Paragraph, composer) | in progress |
-| M3 | Styles (nested/GREP, bullets, keeps, span columns) | started |
-| M4 | Color & effects | started |
-| M5 | Graphics & links | started |
-| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | in progress (IDML ✅, PDF export) |
-| M7 | Long documents (sections, TOC, index, footnotes, books) | in progress (sections, TOC, text variables/running heads, hyperlinks, bookmarks, footnotes, cross-references, index) |
-| M8 | Tables | ✅ core (table/cell styles, rotation, diagonal lines pending) |
-| M9 | Performance (MT composition, tiles) | in progress (glyph path cache, bounded RTL label layout cache, culling, parallel compose 6.7× faster, perf harness) |
-| M10 | Find/Change, spelling, Preflight | in progress (Find/Change ✅, spelling ✅, Preflight) |
-| M11 | Layout power features (liquid/alternate layouts, data merge) | started (data merge phase 1, step & repeat, snippets) |
-| M12 | Interactive & digital (EPUB, HTML, interactive PDF) | started (EPUB, PDF links/bookmarks) |
-| M13 | Automation (scripts, batch) | |
-| M14 | 1.0 polish & packaging | |
+| M0 | Skeleton + vertical slice | Implemented |
+| M1 | Selection, transform, layers, pages, MCP | Implemented; UI depth/fidelity remains open |
+| M2 | Type I (Type tool, threading, Character/Paragraph, composer) | Implemented; CJK/Arabic extensions remain partial |
+| M3 | Styles (nested/GREP, bullets, keeps, span columns) | Implemented, including nested line styles |
+| M4 | Color & effects | Implemented; PDF overprint export and spot-plate preview remain absent |
+| M5 | Graphics & links | Implemented; EPS uses a proxy, not PostScript interpretation |
+| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | Implemented; PDF/X validation and interchange depth remain open |
+| M7 | Long documents (sections, TOC, index, footnotes, books) | Implemented, including filesystem-based books; books require native filesystem access |
+| M8 | Tables | Core, table/cell styles and graphic cells implemented; composed cell rotation and diagonal strokes remain absent |
+| M9 | Performance (MT composition, tiles) | Partial: caches, culling, parallel composition and damage-region repaint; further incremental composition/GPU work remains |
+| M10 | Find/Change, spelling, Preflight | Implemented; non-English hyphenation dictionaries are not bundled |
+| M11 | Layout power features (liquid/alternate layouts, data merge) | Implemented, including liquid/alternate layouts and multi-record data merge |
+| M12 | Interactive & digital (EPUB, HTML, interactive PDF) | Implemented exports, buttons/forms and media embedding; no in-app media playback |
+| M13 | Automation (scripts, batch) | Implemented: command scripts, Scripts panel, CLI and MCP batch |
+| M14 | 1.0 polish & packaging | Packaging scripts/workflows exist; full 1.0 acceptance and visual polish not established by this source review |

@@ -25,9 +25,10 @@ Behaviour comes from public specifications, not from InDesign's implementation:
 - The published IDML specification for attribute names and values.
 
 InDesign itself is only observed black-box (feature names, which options exist); no wording,
-presets or tables are copied. Our default mojikumi and kinsoku tables are built from JLREQ.
+presets or tables are copied. The planned default mojikumi and kinsoku tables will be derived from JLREQ; current
+named kinsoku defaults use common punctuation lists, and mojikumi tables are not executed.
 
-## Where we are (2026-10)
+## Where we are (source review, 2026-10-09)
 
 | Area | State |
 |---|---|
@@ -46,7 +47,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
 | Font menus | Western families first, then Japanese, Simplified Chinese, Traditional Chinese and Korean groups (from the font's `meta` languages, CJK family names, OS/2 code pages, else its coverage); CJK families under their native names unless Preferences › Type › Show Font Names in English; the order is recalled from InDesign, not observed |
 | CJK fonts | Japanese faces (Shippori Mincho first) from the optional craft-fonts build input, in the font menus for users to apply; fallback by language (with fallback fonts on) (Japanese: the craft-fonts faces, then system fonts; Simplified and Traditional Chinese, Korean: system fonts); document fonts: the fonts of a `Document Fonts` folder beside an opened file belong to that document (composition, export, font menus), ahead of installed fonts of the same name, and are forgotten when it closes; Package copies every font file that draws text, fallback fonts included (licence permitting). Font files stay in memory for the session (reopening a document reuses them) and aren't read on the web |
-| Everything else below | missing |
+| Remaining architecture below | planned unless marked implemented above; phase status is recorded below |
 
 Known bugs to fix first:
 
@@ -166,7 +167,8 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   closes. File › Package copies the document's fonts into the package's `Document Fonts` folder
   (font licences permitting: OS/2 `fsType` restricted-licence fonts are listed, not copied), so a
   packaged CJK document opens with its fonts on another machine. On the web, the fonts of a
-  dropped or opened package folder load the same way.
+  dropped or opened package folder are a planned extension; the current web build does not
+  load sibling `Document Fonts` folders.
 
 ### Editing and output
 
@@ -217,6 +219,17 @@ Exact names and enumerations are checked against the IDML specification as each 
 
 ## Phases
 
+Phase 1's listed native foundations are implemented: see `crates/fonts/src/lib.rs`,
+`crates/fonts/src/tests_vertical.rs`, the document-font loading in `crates/engine/src`, and
+story-direction/line-breaking code in `crates/compose/src`. This is source evidence, not a
+new visual or runtime acceptance run. Web package-folder font loading remains unimplemented.
+
+Phases 2–7 remain incomplete. Some ingredients already exist (basic ruby/kenten/TCY,
+composite-font commands and language-aware quotes), so their contents are completion targets,
+not assertions that every listed component is absent. In particular, `Composer` in
+`crates/doc/src/attrs.rs` has only Paragraph and SingleLine; preflight explicitly warns that
+mojikumi spacing and kinsoku priorities are not applied.
+
 Each phase lands as reviewable commits with tests (compose tests for layout, engine tests for
 commands, IDML round trips, a rendered sample page) and `cargo xtask ci`.
 
@@ -230,7 +243,8 @@ commands, IDML round trips, a rendered sample page) and `cargo xtask ci`.
 | 6 | Editing and output | kana/width-sensitive Find/Change, width and kana conversion, CJK numbering, quotes, EPUB/HTML vertical text and ruby | 10–15 |
 | 7 | Feature set UI | Preferences › Feature Set, panels and dialogs for every attribute, Japanese defaults for new documents, translations | 15–20 |
 
-Total: roughly 100–150 agent hours.
+Historical full-plan estimate: roughly 100–150 agent hours, including Phase 1. This is not
+a current remaining-work estimate; no estimates were remeasured during reconciliation.
 
 ### Phase 1 in detail
 
