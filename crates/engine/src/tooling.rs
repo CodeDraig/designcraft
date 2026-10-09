@@ -54,6 +54,13 @@ impl Session {
         self.tool.id()
     }
 
+    /// Discard pointer gesture state while retaining the current tool and selection.
+    pub fn cancel_tool_gesture(&mut self) {
+        self.cancel_interaction();
+        self.text_drag = false;
+        self.tool = designcraft_tools::create(self.tool.id());
+    }
+
     pub fn set_tool(&mut self, id: &str) {
         if self.tool.id() == id {
             return;

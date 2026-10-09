@@ -244,9 +244,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         fit(app, rect, "spread");
     }
     handle_input(app, ui, &resp, rect);
-    let Some(st) = app.session.active() else { return };
     let Some(&v) = app.view() else { return };
     let xf = Xf::new(rect, &v);
+    crate::context_menu::show(app, ui, &resp, &xf, screen);
+    let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
     let layout = CanvasLayout::new(&doc, st.editing_parents);
     let painter = ui.painter_at(screen);

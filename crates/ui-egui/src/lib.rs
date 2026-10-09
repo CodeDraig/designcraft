@@ -9,6 +9,7 @@
 pub mod about;
 pub mod canvas;
 pub mod chrome;
+mod context_menu;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -666,6 +667,7 @@ impl DesignApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        context_menu::sync_document(self, &ctx);
         if !self.fonts_ready {
             ctx.request_repaint();
             return;
