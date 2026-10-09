@@ -20,14 +20,19 @@ pub fn has_xrefs(st: &Story) -> bool {
 
 impl XrefIndex {
     /// `get` composes a story (normally through the cache). Stories that themselves hold
-    /// cross-references are composed without resolving them (their anchors' pages hardly move).
+    /// cross-references or running headers are composed without resolving those dynamic fields.
+    /// Resolving a header here can request a cross-referencing heading and enter this build again.
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> XrefIndex {
         let mut pages = HashMap::new();
         for (sid, st) in &doc.stories {
             if st.anchors.is_empty() {
                 continue;
             }
-            let cs = if has_xrefs(st) { Arc::new(crate::compose_story(doc, *sid, &Default::default())) } else { get(*sid) };
+            let cs = if has_xrefs(st) || crate::vars::has_running(doc, st) {
+                Arc::new(crate::compose_story(doc, *sid, &Default::default()))
+            } else {
+                get(*sid)
+            };
             for a in &st.anchors {
                 let Some(pos) = st.anchor_pos(a.id) else { continue };
                 if let Some((page, ..)) = crate::vars::place(doc, &cs, pos) {

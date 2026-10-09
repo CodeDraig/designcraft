@@ -47,6 +47,8 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     doc.sections.len().hash(&mut h);
+    let grid = &doc.settings.baseline_grid;
+    (grid.start.to_bits(), grid.increment.to_bits()).hash(&mut h);
     h.finish()
 }
 
@@ -245,6 +247,12 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
     // The document's font scope: another document's fonts of the same name set it differently.
     let mut sig =
         vec![Arc::as_ptr(story) as usize, story.rev as usize, Arc::as_ptr(&doc.styles) as usize, doc.sections.len(), doc.font_scope as usize];
+    // Preferences can change the grid without replacing any story, style or frame Arc.
+    // Keep both halves of each f64 on 32-bit WASM as well as native targets.
+    for v in [doc.settings.baseline_grid.start, doc.settings.baseline_grid.increment] {
+        let bits = v.to_bits();
+        sig.extend([bits as u32 as usize, (bits >> 32) as usize]);
+    }
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
     for f in &story.frames {

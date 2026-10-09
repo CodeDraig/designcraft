@@ -34,7 +34,9 @@ Other MCP clients use the same command line, e.g. in a JSON config:
 | UI-only commands (`view.*`, `window.*`, `app.*`) via `execute` | Error | Work |
 
 In connected mode every tool maps to a control-channel method (`engine.execute`, `ui.render`, `ui.pointer`, …), so
-what the agent does shows up live in the window. The connection is re-established once if the app restarts.
+what the agent does shows up live in the window. A transport failure after sending a request reports
+that its outcome is unknown and does not retry it: the app may already have performed the edit.
+The next explicit call reconnects; inspect the document before deciding whether to repeat an edit.
 
 ## Coordinates
 

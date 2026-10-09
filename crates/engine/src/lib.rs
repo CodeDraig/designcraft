@@ -369,7 +369,17 @@ impl Session {
         st.doc = stash;
         st.revision = st.revision.saturating_add(1);
     }
-    pub fn close_document(&mut self, i: usize) {
+    /// Close a saved document. Discarding unsaved work requires the explicit command flag.
+    pub fn close_document(&mut self, i: usize) -> Result<()> {
+        let st = self.docs.get(i).ok_or_else(|| EngineError::Other(format!("no document at index {i}")))?;
+        if st.is_dirty() {
+            return Err(EngineError::Other("document has unsaved changes; save it or explicitly close with discard: true".into()));
+        }
+        self.discard_document(i);
+        Ok(())
+    }
+
+    fn discard_document(&mut self, i: usize) {
         if self.active == Some(i) {
             self.stop_data_preview();
         }

@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- Review fixes (2026-10-08): protect IDML book chapters from native-format overwrites; confirm unsaved document closes; retain undo after partial script failures; avoid replaying MCP requests after a lost reply; break mixed running-header/cross-reference index recursion; invalidate text composition when the baseline grid changes; deliver browser Save a Copy downloads without marking the document saved.
+
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.

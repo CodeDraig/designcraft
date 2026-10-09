@@ -8,6 +8,7 @@ use crate::{DesignApp, ScreenMode};
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{}"),
+    ("app.close", "Close", Some("Cmd+W"), "{index?} — asks before closing a document with unsaved changes"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{}"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
@@ -162,7 +163,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.newDocumentDialog",
             "ui:app.openDialog",
             "-",
-            "cmd:file.close",
+            "ui:app.close",
             "ui:app.save",
             "ui:app.saveDialog",
             "ui:app.saveCopyDialog",
@@ -698,6 +699,23 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             Ok(Value::Null)
         }
         "app.openDialog" => app.pick_and_open("open"),
+        "app.close" => {
+            let index = match p.get("index") {
+                Some(v) => match v.as_u64().and_then(|i| usize::try_from(i).ok()) {
+                    Some(i) => Some(i),
+                    None => return Some(Err("index must be a non-negative document index".into())),
+                },
+                None => app.session.active_index(),
+            };
+            let Some(index) = index else { return Some(Err("no active document".into())) };
+            let Some(st) = app.session.documents().get(index) else { return Some(Err("no such document".into())) };
+            if st.is_dirty() {
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("closeDocument", json!({"uid": st.uid, "title": st.title(), "action": "save"})));
+                Ok(json!({"confirmationRequired": true}))
+            } else {
+                app.run("file.close", json!({"index": index}))
+            }
+        }
         "app.placeDialog" => app.pick_and_open("place"),
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
@@ -733,6 +751,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "app.saveCopyDialog" => {
             let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
+                if app.services.download.is_some() {
+                    return Some(download_copy(app, &path));
+                }
                 return Some(app.run("file.saveACopy", json!({"path": path})));
             }
             Ok(Value::Null)
@@ -1382,13 +1403,23 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
 /// Save by handing the serialized document to the host as a download (web).
 fn download_document(app: &mut DesignApp) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).ok_or("no document")?;
-    let ser = app.run("file.serialize", json!({}))?;
-    let bytes = designcraft_engine::cmd::base64_decode(ser["base64"].as_str().unwrap_or_default());
-    if let Some(download) = app.services.download.as_mut() {
-        download(&name, &bytes);
-    }
+    download_copy(app, &name)?;
     // Marks the document saved; on the web the engine doesn't touch a file system.
     app.run("file.saveAs", json!({"path": name}))
+}
+
+/// A browser copy delivers bytes without changing the document's path or saved state.
+fn download_copy(app: &mut DesignApp, name: &str) -> Result<Value, String> {
+    let ser = app.run("file.serialize", json!({}))?;
+    let bytes = designcraft_engine::cmd::base64_decode(ser["base64"].as_str().unwrap_or_default());
+    if let Some(write) = app.services.write.as_mut() {
+        write(name, &bytes)?;
+    } else if let Some(download) = app.services.download.as_mut() {
+        download(name, &bytes);
+    } else {
+        return Err("no download service available".into());
+    }
+    Ok(json!({"path": name, "bytes": bytes.len()}))
 }
 
 fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
@@ -1500,6 +1531,9 @@ fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.close" {
+        return app.session.active().is_some();
+    }
     match designcraft_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
         None => true,
@@ -1709,6 +1743,9 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.close" {
+        return enabled(app, id);
+    }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.");
     }
@@ -2007,6 +2044,127 @@ pub fn quick_apply_items(session: &designcraft_engine::Session, query: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dirty_app(services: crate::Services) -> crate::DesignApp {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), services);
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Unsaved text"})).unwrap();
+        app
+    }
+
+    fn close_action(app: &mut crate::DesignApp, action: &str) -> Result<Value, String> {
+        app.ui.dialog.as_mut().unwrap().fields.insert("action".into(), json!(action));
+        crate::dialogs::confirm(app)
+    }
+
+    #[test]
+    fn regression_close_dialog_cancel_save_and_discard() {
+        let mut app = dirty_app(crate::Services { pick_save: Some(Box::new(|_| None)), ..Default::default() });
+        let uid = app.session.doc().unwrap().uid;
+        app.run("app.close", json!({})).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "closeDocument");
+        close_action(&mut app, "cancel").unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(app.session.doc().unwrap().uid, uid);
+        app.run("app.close", json!({})).unwrap();
+        assert!(close_action(&mut app, "save").is_err(), "cancelling the file picker must keep the document open");
+        assert!(app.session.doc().unwrap().is_dirty());
+        assert!(app.ui.dialog.is_some());
+        close_action(&mut app, "discard").unwrap();
+        assert!(app.session.documents().is_empty());
+        assert!(!menu_enabled(&app, "app.close"));
+        assert!(!enabled(&app, "app.close"));
+    }
+
+    #[test]
+    fn regression_close_confirmation_follows_document_identity() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"title": "Clean"})).unwrap();
+        app.run("file.new", json!({"title": "Close this one"})).unwrap();
+        app.run("frame.create", json!({"rect": [0, 0, 100, 100]})).unwrap();
+        let target = app.session.doc().unwrap().uid;
+        app.run("app.close", json!({"index": 1})).unwrap();
+        app.run("file.new", json!({"title": "Keep this one"})).unwrap();
+        let keep = app.session.doc().unwrap().uid;
+        app.run("file.close", json!({"index": 0})).unwrap();
+        close_action(&mut app, "discard").unwrap();
+        assert!(!app.session.documents().iter().any(|st| st.uid == target));
+        assert_eq!(app.session.doc().unwrap().uid, keep);
+    }
+
+    #[test]
+    fn regression_close_saves_before_removing_the_document() {
+        let dir = std::env::temp_dir().join(format!("dc-close-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("saved.designcraft");
+        let chosen = path.to_string_lossy().into_owned();
+        let mut app = dirty_app(crate::Services { pick_save: Some(Box::new(move |_| Some(chosen.clone()))), ..Default::default() });
+        app.run("app.close", json!({})).unwrap();
+        close_action(&mut app, "save").unwrap();
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.dialog.is_none());
+        let mut reopened = designcraft_engine::Session::new();
+        reopened.execute("file.open", &json!({"path": path})).unwrap();
+        assert!(reopened.doc().unwrap().doc.stories.values().any(|st| st.text == "Unsaved text"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn regression_close_rejects_invalid_indices_and_uses_the_ui_shortcut() {
+        let mut app = dirty_app(crate::Services::default());
+        for index in [json!(-1), json!("0"), json!(5)] {
+            assert!(app.run("app.close", json!({"index": index})).is_err());
+            assert!(app.ui.dialog.is_none());
+            assert_eq!(app.session.documents().len(), 1);
+        }
+        let close = effective_shortcuts(&app).into_iter().find(|(_, shortcut)| shortcut == "Cmd+W");
+        assert_eq!(close.unwrap().0, "app.close");
+    }
+
+    #[test]
+    fn regression_browser_copy_downloads_without_marking_saved() {
+        let deliveries = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let output = deliveries.clone();
+        let services = crate::Services {
+            pick_save: Some(Box::new(|_| Some("copy.designcraft".into()))),
+            download: Some(Box::new(|_, _| panic!("use the fallible writer when available"))),
+            write: Some(Box::new(move |name, bytes| {
+                output.borrow_mut().push((name.to_string(), bytes.to_vec()));
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut app = dirty_app(services);
+        let path = app.session.doc().unwrap().path.clone();
+        let saved = app.session.doc().unwrap().saved_doc.clone();
+        let result = app.run("app.saveCopyDialog", json!({})).unwrap();
+        assert_eq!(result["path"], "copy.designcraft");
+        assert_eq!(deliveries.borrow().len(), 1);
+        let bytes = &deliveries.borrow()[0].1;
+        assert_eq!(result["bytes"], bytes.len());
+        let mut reopened = designcraft_engine::Session::new();
+        reopened.execute("file.openBytes", &json!({"base64": designcraft_engine::cmd::base64_encode(bytes)})).unwrap();
+        assert!(reopened.doc().unwrap().doc.stories.values().any(|st| st.text == "Unsaved text"));
+        assert_eq!(app.session.doc().unwrap().path, path);
+        assert!(std::sync::Arc::ptr_eq(&app.session.doc().unwrap().saved_doc, &saved));
+        assert!(app.session.doc().unwrap().is_dirty());
+    }
+
+    #[test]
+    fn regression_failed_browser_save_keeps_close_dialog_and_unsaved_work() {
+        let mut app = dirty_app(crate::Services {
+            pick_save: Some(Box::new(|_| Some("copy.designcraft".into()))),
+            download: Some(Box::new(|_, _| {})),
+            write: Some(Box::new(|_, _| Err("download failed".into()))),
+            ..Default::default()
+        });
+        assert_eq!(app.run("app.saveCopyDialog", json!({})).unwrap_err(), "download failed");
+        app.run("app.close", json!({})).unwrap();
+        assert_eq!(close_action(&mut app, "save").unwrap_err(), "download failed");
+        assert!(app.session.doc().unwrap().is_dirty());
+        assert!(app.ui.dialog.is_some());
+        assert!(app.session.doc().unwrap().path.is_none());
+    }
 
     fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
         for it in items {

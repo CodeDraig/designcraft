@@ -41,6 +41,20 @@ The result is JSON: `{"completed": n, "results": [...]}`, plus `failedIndex` / `
 fails (the exit status is non-zero; `--keep-going` records errors and continues). `run --cmd ID=JSON` accepts the
 same references, and MCP's `batch` tool takes `commands` or `script` text with them.
 
+The engine's `script.run` command groups a successful script into one undo step. If a later command
+fails, completed edits remain in the document with their individual undo steps intact.
+
+## Saving and closing documents
+
+`file.close {index?}` closes only a document without unsaved changes. Save it first, or explicitly
+discard its edits with `file.close {index?, discard: true}`. Discard also removes its recovery copy.
+In the running app, `app.close {index?}` opens Save / Discard / Cancel for an unsaved document;
+cancelling or failing to save keeps it open.
+
+Books may read IDML chapters, but `book.paginate` and `book.syncStyles` reject IDML write targets
+before writing any chapter. Save native `.designcraft` copies and use them in the book to update
+pagination or styles. An IDML chapter may still be the style source when all targets are native.
+
 ## Data merge
 
 `data.source.select {path, sheet?}` links a CSV/TSV/`.xlsx` file to the document (`data.source.update` re-reads it,

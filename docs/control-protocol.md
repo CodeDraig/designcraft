@@ -41,6 +41,11 @@ Data merge runs through `engine.execute` like any command: `data.source.select`,
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
 merged document; the template stays as it was ([agents.md](agents.md#data-merge)).
 
+Closing through `app.close {index?}` opens the `closeDocument` dialog when the document has unsaved
+changes. Set its `action` field to `save` or `discard`, then use `ui.dialog.confirm`; `ui.dialog.cancel`
+keeps the document open. The engine's `file.close {index?}` rejects unsaved documents unless
+`discard: true` is explicitly supplied. Save failures leave the confirmation and document open.
+
 Headless window screenshots (locked screen, hidden window): `cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl`, where each line is one of the requests above, `{"shot": "/abs/out.png"}` or `{"steps": n}` (renders the whole UI offscreen with wgpu).
 
 The MCP server (`designcraft-cli mcp`) wraps the same methods for Claude and other agents.

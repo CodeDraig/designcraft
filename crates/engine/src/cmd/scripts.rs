@@ -12,7 +12,10 @@ fn run(s: &mut crate::Session, p: &Value) -> Result<Value> {
     let uid = s.active().map(|d| d.uid);
     let before = s.active().map_or(0, |d| d.history.undo.len());
     let report = s.run_script(&steps);
-    if let Some(st) = s.active_mut()
+    // On failure the outer command will not push a replacement history entry. Keep the
+    // completed steps undoable, just as when they are run individually.
+    if report.failed.is_none()
+        && let Some(st) = s.active_mut()
         && Some(st.uid) == uid
         && st.history.undo.len() > before
     {

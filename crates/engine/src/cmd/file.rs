@@ -24,6 +24,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
+            if cfg!(target_arch = "wasm32") {
+                return Err(bad("file.saveACopy", "filesystem saving is unavailable on the web; use app.saveCopyDialog to download a copy"));
+            }
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?.to_string();
             let bytes = to_bytes(&s.doc()?.doc);
             #[cfg(not(target_arch = "wasm32"))]
@@ -50,9 +53,19 @@ pub fn specs() -> Vec<CommandSpec> {
             let bytes = to_bytes(doc);
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
         }),
-        cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?}", has_doc, |s, p| {
-            let i = p.get("index").and_then(Value::as_u64).map(|v| v as usize).or(s.active_index()).unwrap_or(0);
-            s.close_document(i);
+        cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?, discard?: false} — unsaved documents require an explicit discard: true", has_doc, |s, p| {
+            let i = match p.get("index") {
+                Some(v) => v.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| bad("file.close", "invalid document index"))?,
+                None => s.active_index().ok_or(EngineError::NoDocument)?,
+            };
+            if s.documents().get(i).is_none() {
+                return Err(bad("file.close", format!("no document at index {i}")));
+            }
+            if p.get("discard").and_then(Value::as_bool) == Some(true) {
+                s.discard_document(i);
+            } else {
+                s.close_document(i)?;
+            }
             ok()
         }),
         cmd!(noundo "file.activate", "Activate Document", [], None, "{index}", has_doc, |s, p| {

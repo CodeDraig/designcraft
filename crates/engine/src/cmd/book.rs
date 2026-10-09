@@ -60,6 +60,17 @@ fn store(path: &str, d: &designcraft_doc::Document) -> Result<()> {
     }
 }
 
+/// Imported IDML may contain information the native model does not retain. Check every
+/// target before writing any chapter, so a mixed book cannot partially overwrite originals.
+fn check_write_paths<'a>(command: &str, paths: impl Iterator<Item = &'a str>) -> Result<()> {
+    for path in paths {
+        if path.to_ascii_lowercase().ends_with(".idml") {
+            return Err(bad(command, format!("cannot overwrite IDML chapter {path}; save a native .designcraft copy and use it in the book")));
+        }
+    }
+    Ok(())
+}
+
 /// Make page numbering of `d` start at `n` (the first section).
 fn start_at(d: &mut designcraft_doc::Document, n: u32) {
     if !d.sections.iter().any(|x| x.start == 0) {
@@ -148,8 +159,9 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
-        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended (files are saved)", has_book, |s, _| {
+        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended (native files are saved; IDML targets are rejected)", has_book, |s, _| {
             let b = s.book.clone().ok_or_else(no_book)?;
+            check_write_paths("book.paginate", b.documents.iter().map(String::as_str))?;
             let mut next = 1u32;
             for p in &b.documents {
                 let mut d = load(p)?;
@@ -159,9 +171,10 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"pages": next - 1}))
         }),
-        cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
+        cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — copy source paragraph/character styles and swatches by name into native chapters (IDML targets are rejected)", has_book, |s, _| {
             let b = s.book.clone().ok_or_else(no_book)?;
             let src_path = b.documents.get(b.style_source).ok_or_else(|| bad("book.syncStyles", "the book is empty"))?;
+            check_write_paths("book.syncStyles", b.documents.iter().enumerate().filter(|(i, _)| *i != b.style_source).map(|(_, p)| p.as_str()))?;
             let src = load(src_path)?;
             let mut n = 0;
             for (i, p) in b.documents.iter().enumerate() {

@@ -332,6 +332,34 @@ fn list_commands_filters() {
 
 // ---------- connect mode ----------
 
+#[test]
+fn regression_remote_does_not_replay_a_request_after_losing_its_reply() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = std::thread::spawn(move || {
+        let mut received = Vec::new();
+        for respond in [false, true] {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            received.push(request["method"].clone());
+            if respond {
+                writeln!(reader.get_mut(), "{}", json!({"id": request["id"], "ok": true, "result": "inspected"})).unwrap();
+            }
+        }
+        received
+    });
+    let mut remote = Remote::connect(&addr).unwrap();
+    let result = remote.call("engine.execute", json!({"command": "frame.create", "params": {"rect": [0, 0, 100, 100]}}));
+    assert!(result.is_err(), "a missing reply must not silently repeat a completed edit");
+    assert!(result.unwrap_err().contains("not retried"));
+    assert_eq!(remote.call("document.inspect", json!({})).unwrap(), "inspected");
+    assert_eq!(server.join().unwrap(), [json!("engine.execute"), json!("document.inspect")]);
+}
+
 /// A fake app on a loopback port answering a few control methods, recording what it got.
 fn fake_app() -> (String, std::sync::mpsc::Receiver<Value>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -804,6 +804,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.dialog.clone() else { return };
     let mut result: Option<bool> = None;
     let title = match d.id.as_str() {
+        "closeDocument" => crate::i18n::tr(&app.ui.language, "Save Changes"),
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
@@ -849,6 +850,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         }
         ui.add_space(10.0);
         match d.id.as_str() {
+            "closeDocument" => {
+                crate::rtl::label(ui, format!("{} “{}”?", crate::i18n::tr(&app.ui.language, "Save changes to"), d.s("title")));
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Discarding will lose the unsaved changes."));
+            }
             "newDocument" => {
                 ui.horizontal(|ui| {
                     ui.with_layout(if crate::i18n::is_rtl(&app.ui.language) { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) }, |ui| {
@@ -1373,12 +1378,19 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  OK  ")).color(egui::Color32::WHITE)))
+                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, if d.id == "closeDocument" { "Save" } else { "  OK  " })).color(egui::Color32::WHITE)))
                             .fill(crate::theme::Tokens::get(ui.ctx()).accent_strong),
                     )
                     .clicked()
                     || ui.input(|i| i.key_pressed(egui::Key::Enter))
                 {
+                    if d.id == "closeDocument" {
+                        d.fields.insert("action".into(), json!("save"));
+                    }
+                    result = Some(true);
+                }
+                if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Discard"))).clicked() {
+                    d.fields.insert("action".into(), json!("discard"));
                     result = Some(true);
                 }
                 if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1401,6 +1413,34 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
     match d.id.as_str() {
+        "closeDocument" => {
+            let result = (|| {
+                let uid = d.fields.get("uid").and_then(Value::as_u64).ok_or("missing document identity")?;
+                // Indices can move while a dialog is open; its decision belongs to this document.
+                let index = app.session.documents().iter().position(|st| st.uid == uid).ok_or("the document is no longer open")?;
+                match d.s("action").as_str() {
+                    "cancel" => Ok(Value::Null),
+                    "discard" => app.run("file.close", json!({"index": index, "discard": true})),
+                    "save" => {
+                        app.run("file.activate", json!({"index": index}))?;
+                        if app.session.doc().map_err(|e| e.to_string())?.is_dirty() {
+                            app.run("app.save", json!({}))?;
+                        }
+                        // A cancelled picker returns successfully without saving.
+                        if app.session.doc().map_err(|e| e.to_string())?.is_dirty() {
+                            return Err("Save was cancelled; the document is still open.".into());
+                        }
+                        app.run("file.close", json!({"index": index}))
+                    }
+                    _ => Err("choose save, discard or cancel".into()),
+                }
+            })();
+            if let Err(e) = &result {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            result
+        }
         "newDocument" => {
             let margins = json!({"top": d.m("marginTop").unwrap_or(36.0), "bottom": d.m("marginBottom").unwrap_or(36.0), "inside": d.m("marginInside").unwrap_or(36.0), "outside": d.m("marginOutside").unwrap_or(36.0)});
             app.run(
