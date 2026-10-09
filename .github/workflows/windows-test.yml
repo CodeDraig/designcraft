@@ -1,0 +1,89 @@
+name: Windows test package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-test-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  DESIGNCRAFT_BUILD_SHA: ${{ github.sha }}
+
+jobs:
+  package:
+    name: Build and install Windows x64 test package
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out release fonts
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: storytold/craft-fonts
+          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: windows-x64-test-package
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build and package unsigned test binaries
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: ./packaging/windows/package.ps1 -Arch x64
+      - name: Install, render a sample, and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/release/*.msi | Select-Object -First 1).FullName
+          $log = Join-Path $env:RUNNER_TEMP 'designcraft-install.log'
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$log`"" -Wait -PassThru
+          if ($p.ExitCode -notin @(0, 3010)) { Get-Content $log -Tail 60; throw "MSI install failed: $($p.ExitCode)" }
+          $dir = Join-Path $env:ProgramFiles 'DesignCraft'
+          try {
+            foreach ($exe in 'designcraft.exe', 'designcraft-cli.exe') {
+              if (-not (Test-Path (Join-Path $dir $exe))) { throw "$exe was not installed" }
+            }
+            $cli = Join-Path $dir 'designcraft-cli.exe'
+            & $cli --version
+            if ($LASTEXITCODE -ne 0) { throw 'Installed CLI version check failed' }
+            $png = Join-Path $env:RUNNER_TEMP 'designcraft-sample.png'
+            & $cli run --sample --export $png
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $png)) { throw 'Installed CLI sample render failed' }
+          } finally {
+            $p = Start-Process msiexec.exe -ArgumentList '/x', "`"$msi`"", '/qn', '/norestart' -Wait -PassThru
+            if ($p.ExitCode -notin @(0, 3010)) { throw "MSI uninstall failed: $($p.ExitCode)" }
+          }
+          if (Test-Path (Join-Path $dir 'designcraft.exe')) { throw 'Uninstall left designcraft.exe behind' }
+      - name: Record build identity and checksums
+        shell: pwsh
+        run: |
+          @"
+          DesignCraft Windows x64 unsigned test build
+          Source: $env:GITHUB_REPOSITORY
+          Commit: $env:GITHUB_SHA
+          Run: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          Validation: MSI installation, installed CLI version, sample PNG rendering, uninstallation.
+          "@ | Set-Content dist/release/BUILD-INFO.txt
+          Get-ChildItem dist/release/*.msi, dist/release/*.zip | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content dist/release/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: designcraft-windows-x64-test
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 30
