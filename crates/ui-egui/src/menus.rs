@@ -1082,9 +1082,6 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
-    if id == "app.close" {
-        return app.session.active().is_some();
-    }
     match designcraft_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
         None => true,
@@ -1146,9 +1143,6 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
-    if id == "app.close" {
-        return enabled(app, id);
-    }
     if ui_label(id).is_some() {
         return app.session.active().is_some() || id.starts_with("app.") || id.starts_with("window.");
     }
@@ -1214,8 +1208,6 @@ mod tests {
         assert!(app.ui.dialog.is_some());
         close_action(&mut app, "discard").unwrap();
         assert!(app.session.documents().is_empty());
-        assert!(!menu_enabled(&app, "app.close"));
-        assert!(!enabled(&app, "app.close"));
     }
 
     #[test]
