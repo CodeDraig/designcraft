@@ -351,11 +351,13 @@ impl Session {
     }
     pub fn set_active(&mut self, i: usize) {
         if i < self.docs.len() && self.active != Some(i) {
+            self.cancel_tool_gesture();
             self.stop_data_preview();
             self.active = Some(i);
         }
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
+        self.cancel_tool_gesture();
         self.stop_data_preview();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
@@ -380,6 +382,9 @@ impl Session {
     }
 
     fn discard_document(&mut self, i: usize) {
+        if i < self.docs.len() {
+            self.cancel_tool_gesture();
+        }
         if self.active == Some(i) {
             self.stop_data_preview();
         }
@@ -401,6 +406,9 @@ impl Session {
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
+        if matches!(id, "edit.undo" | "edit.redo") {
+            self.cancel_tool_gesture();
+        }
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         if let Err(e) = (spec.enabled)(self) {
             // A command that takes `ids` acts on the objects the call names, so it needs no

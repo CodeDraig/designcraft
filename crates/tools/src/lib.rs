@@ -20,6 +20,7 @@ mod pencil;
 pub mod select;
 pub mod snap;
 mod text;
+pub mod threading;
 mod xform;
 
 use designcraft_compose::Cache;

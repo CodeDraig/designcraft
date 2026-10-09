@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- REVIEW2.3: Selection-tool output ports load text for clicking an existing frame or drawing a new one; atomic `frame.thread` preserves populated stories, marker payloads and external text references, with undo/redo and cancellation.
+
 - REVIEW2.2: canvas right-click menus select the clicked object or text context and reuse existing commands; document changes close stale menus.
 
 - REVIEW2.1: concurrent first lookups of installed fonts recheck the loaded family before substituting a fallback.

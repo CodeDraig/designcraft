@@ -29,6 +29,7 @@ mod slice;
 pub mod story;
 pub mod styles;
 pub mod table;
+mod threading;
 pub mod vars;
 pub mod xref;
 

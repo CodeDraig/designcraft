@@ -94,6 +94,7 @@ fn spread_delta_to_canvas(xf: Affine, d: Vec2) -> Vec2 {
 }
 
 pub struct SelectionTool {
+    threading: crate::threading::Threading,
     direct: bool,
     drag: Drag,
     hover_handle: Option<usize>,
@@ -104,7 +105,7 @@ pub struct SelectionTool {
 
 impl SelectionTool {
     pub fn new(direct: bool) -> Self {
-        Self { direct, drag: Drag::None, hover_handle: None, guides: vec![], shift_release: None }
+        Self { threading: Default::default(), direct, drag: Drag::None, hover_handle: None, guides: vec![], shift_release: None }
     }
 }
 
@@ -370,6 +371,11 @@ impl Tool for SelectionTool {
     }
 
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        if !self.direct
+            && let Some(actions) = self.threading.pointer(cx, ev)
+        {
+            return actions;
+        }
         let p = ev.pos;
         match ev.kind {
             PointerKind::Move => {
@@ -723,6 +729,9 @@ impl Tool for SelectionTool {
     }
 
     fn key(&mut self, cx: &ToolContext, key: ToolKey, mods: Mods) -> Vec<Action> {
+        if key == ToolKey::Escape && self.threading.cancel() {
+            return vec![Action::Cancel];
+        }
         let inc = cx.doc.settings.keyboard_increment * if mods.shift { 10.0 } else { 1.0 };
         let mv = |dx: f64, dy: f64| vec![Action::Exec("transform.move".into(), json!({"dx": dx, "dy": dy, "copy": mods.alt}))];
         if cx.selection.items.is_empty() {
@@ -740,6 +749,9 @@ impl Tool for SelectionTool {
     }
 
     fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
+        if self.threading.busy() {
+            return self.threading.overlays();
+        }
         match &self.drag {
             Drag::Marquee { start, cur } => vec![Overlay::Marquee(Rect::from_points(*start, *cur))],
             Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
@@ -748,6 +760,11 @@ impl Tool for SelectionTool {
     }
 
     fn cursor(&self, cx: &ToolContext, p: Point, _m: Mods) -> Cursor {
+        if !self.direct
+            && let Some(cursor) = self.threading.cursor(cx, p)
+        {
+            return cursor;
+        }
         if self.direct {
             return Cursor::ArrowHollow;
         }
@@ -765,7 +782,7 @@ impl Tool for SelectionTool {
     }
 
     fn busy(&self) -> bool {
-        !matches!(self.drag, Drag::None)
+        self.threading.busy() || !matches!(self.drag, Drag::None)
     }
 }
 

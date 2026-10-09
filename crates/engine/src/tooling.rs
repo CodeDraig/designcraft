@@ -65,6 +65,7 @@ impl Session {
         if self.tool.id() == id {
             return;
         }
+        self.cancel_tool_gesture();
         self.tool = designcraft_tools::create(id);
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"

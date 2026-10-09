@@ -196,6 +196,13 @@ impl Document {
     /// Thread `from` → `to`: `to` joins `from`'s story right after `from`. If `to` held its own text,
     /// that text is appended to the story (as a new paragraph) and its old story is removed.
     pub fn thread(&mut self, from: ItemId, to: ItemId) -> Result<()> {
+        let mut next = self.clone();
+        next.thread_inner(from, to)?;
+        *self = next;
+        Ok(())
+    }
+
+    fn thread_inner(&mut self, from: ItemId, to: ItemId) -> Result<()> {
         if from == to {
             return Err(DocError::Invalid("cannot thread a frame to itself".into()));
         }
@@ -209,40 +216,28 @@ impl Document {
         if ts == Some(fs) {
             return Err(DocError::Invalid("frames are already in the same story".into()));
         }
+        crate::threading::allowed(self, fs, ts)?;
+        if !self.story(fs).is_some_and(|story| story.frames.contains(&from)) {
+            return Err(DocError::Invalid("source frame is absent from its story".into()));
+        }
         if let Some(ts) = ts {
             let other = self.stories.remove(&ts).ok_or(DocError::NoStory(ts))?;
             let other = Arc::unwrap_or_clone(other);
             // Frames of the other story after `to` follow along; frames before it are left as empty new stories.
-            let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
+            let pos_to =
+                other.frames.iter().position(|f| *f == to).ok_or_else(|| DocError::Invalid("destination frame is absent from its story".into()))?;
             let before: Vec<ItemId> = other.frames[..pos_to].to_vec();
             let after: Vec<ItemId> = other.frames[pos_to..].to_vec();
+            let offset;
             {
                 let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
-                if !other.text.is_empty() {
-                    st.text.push('\n');
-                    st.text.push_str(&other.text);
-                    st.paras.extend(other.paras.iter().cloned());
-                    // Char runs: '\n' takes the last run's format, then the other story's runs.
-                    if let Some(last) = st.chars.last_mut() {
-                        last.len += 1;
-                    }
-                    st.chars.extend(other.chars.iter().filter(|r| r.len > 0).cloned());
-                    st.tables.extend(other.tables.iter().map(|(k, v)| (*k, v.clone())));
-                    for n in &other.notes {
-                        let id = st.next_note_id();
-                        st.notes.push(Arc::new(crate::Footnote { id, text: n.text.clone() }));
-                    }
-                    st.anchors.extend(other.anchors.iter().cloned());
-                    st.xrefs.extend(other.xrefs.iter().cloned());
-                    st.index_refs.extend(other.index_refs.iter().cloned());
-                    st.objects.extend(other.objects.iter().cloned());
-                    st.rev += 1;
-                }
+                offset = crate::threading::append(st, &other)?;
                 let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
                 for (k, f) in after.iter().enumerate() {
                     st.frames.insert(at + k, *f);
                 }
             }
+            crate::threading::retarget(self, &other, fs, offset)?;
             for f in &after {
                 if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
                     t.story = fs;
@@ -269,7 +264,7 @@ impl Document {
             it.content = Content::Text(TextFrame { story: fs, options: TextFrameOptions::default() });
         }
         if let Some(st) = self.story_mut(fs) {
-            st.rev += 1;
+            st.rev = st.rev.saturating_add(1);
         }
         Ok(())
     }

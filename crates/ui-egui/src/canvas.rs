@@ -912,12 +912,8 @@ fn draw_ports(
     let overset = is_last && cs.is_overset();
     let s = 8.5;
     let _ = layout;
-    let r = it.inner_bounds();
-    let m = a * it.xf;
-    // In port on the left edge below the top-left corner; out port on the right edge above the
-    // bottom-right corner (screen-space offsets).
-    let inp = xf.to_screen(m * Point::new(r.x0, r.y0)) + vec2(0.0, 14.5);
-    let outp = xf.to_screen(m * Point::new(r.x1, r.y1)) - vec2(0.0, 12.0);
+    let (inp, outp) = designcraft_tools::threading::port_positions(it, a, xf.zoom);
+    let (inp, outp) = (xf.to_screen(inp), xf.to_screen(outp));
     for (c, has_link, is_out) in [(inp, pos > 0, false), (outp, !is_last, true)] {
         let pr = Rect::from_center_size(c, vec2(s, s));
         painter.rect_filled(pr, 0.0, Color32::WHITE);

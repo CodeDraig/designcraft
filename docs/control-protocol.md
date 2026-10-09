@@ -49,3 +49,14 @@ keeps the document open. The engine's `file.close {index?}` rejects unsaved docu
 Headless window screenshots (locked screen, hidden window): `cargo run -p designcraft-ui-egui --example ui_shot -- script.jsonl`, where each line is one of the requests above, `{"shot": "/abs/out.png"}` or `{"steps": n}` (renders the whole UI offscreen with wgpu).
 
 The MCP server (`designcraft-cli mcp`) wraps the same methods for Claude and other agents.
+
+### Threading text frames
+
+`frame.thread` connects the last frame of a source story to the first frame of a destination story.
+Pass `{ "from": 12, "to": 18 }` for an existing text or empty unassigned frame, or
+`{ "from": 12, "spread": 0, "rect": [36, 200, 300, 500] }` to create a destination on a document spread.
+Specify exactly one destination form. The result is `{ "story": 11, "frame": 18 }` (actual IDs vary).
+Creation and linking are one undoable, journaled command, also available through CLI and MCP.
+Populated destinations retain their text and formatting after the source text, separated by one paragraph break.
+Locked/hidden frames, interior endpoints, cycles, incompatible directions, generated stories and Place-and-Link
+relationships return an error without changing either story.
