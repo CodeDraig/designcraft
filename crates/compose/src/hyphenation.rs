@@ -83,7 +83,14 @@ pub(super) fn hyphenation_points(
         let discretionary = glyphs[i..j].iter().any(|g| g.ch == shape::SOFT_HYPHEN) || (i > 0 && glyphs[i - 1].ch == shape::SOFT_HYPHEN);
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
-            let word = &text[a..b];
+            let original = &text[a..b];
+            let clean;
+            let word = if original.contains(designcraft_doc::ANCHOR_MARK) {
+                clean = original.replace(designcraft_doc::ANCHOR_MARK, "");
+                clean.as_str()
+            } else {
+                original
+            };
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let in_foreign = foreign.iter().any(|r| r.contains(&a));
@@ -96,7 +103,12 @@ pub(super) fn hyphenation_points(
                 };
                 for &p in pts.iter() {
                     // char index p → byte → glyph whose cluster ends at that byte.
-                    let byte = a + word.char_indices().nth(p).map(|(bi, _)| bi).unwrap_or(word.len());
+                    let byte = a + original
+                        .char_indices()
+                        .filter(|(_, c)| *c != designcraft_doc::ANCHOR_MARK)
+                        .nth(p)
+                        .map(|(bi, _)| bi)
+                        .unwrap_or(original.len());
                     if let Some(k) = (i..j).find(|&k| glyphs[k].byte + glyphs[k].len == byte && glyphs[k].len > 0) {
                         out[k] = true;
                     }

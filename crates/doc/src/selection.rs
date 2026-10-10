@@ -15,6 +15,21 @@ pub struct CellAddr {
 }
 
 impl CellAddr {
+    /// A persistent review record locates text in arbitrarily nested cells and notes.
+    pub fn review(id: u64) -> Self {
+        Self { table: u64::MAX - 2, row: (id & 0xffffffff) as usize, col: (id >> 32) as usize }
+    }
+    pub fn review_id(&self) -> Option<u64> {
+        (self.table == u64::MAX - 2).then_some((self.row as u64) | ((self.col as u64) << 32))
+    }
+    /// Canonical publication note, including notes nested in tables or other notes.
+    pub fn annotation(id: u64) -> Self {
+        Self { table: u64::MAX - 1, row: (id & 0xffffffff) as usize, col: (id >> 32) as usize }
+    }
+    pub fn annotation_id(&self) -> Option<u64> {
+        (self.table == u64::MAX - 1).then_some((self.row as u64) | ((self.col as u64) << 32))
+    }
+
     /// The text of footnote `id` (see [`crate::notes::FOOTNOTE_TABLE`]).
     pub fn footnote(id: u64) -> Self {
         CellAddr { table: crate::notes::FOOTNOTE_TABLE, row: id as usize, col: 0 }

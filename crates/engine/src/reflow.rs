@@ -5,22 +5,25 @@ use super::{Arc, Session, cmd};
 impl Session {
     /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
     /// trailing pages whose only object is an empty frame of it.
-    pub(super) fn smart_reflow(&mut self) {
-        let Some(st) = self.active() else { return };
+    pub(super) fn smart_reflow(&mut self) -> crate::Result<()> {
+        let Some(st) = self.active() else { return Ok(()) };
         if st.interaction.is_some() {
-            return;
+            return Ok(());
         }
-        let Some(sid) = st.doc.settings.primary_story else { return };
-        let Some(story) = st.doc.story(sid) else { return };
+        let Some(sid) = st.doc.settings.primary_story else { return Ok(()) };
+        let Some(story) = st.doc.story(sid) else { return Ok(()) };
         let cs = self.cache.get(&st.doc, sid, None);
         let overset = cs.overset_at.is_some();
         let empty_tail = story.frames.len() > 1 && story.frames.last().is_some_and(|f| cs.frame(*f).is_none_or(|ft| ft.range.is_empty()));
         if !overset && !empty_tail {
-            return;
+            return Ok(());
         }
         let mut d = (*st.doc).clone();
         if overset {
-            let _ = cmd::place_text_autoflow(&mut d, sid, 500);
+            let result = cmd::place_text_autoflow_cached(&mut d, sid, 500, &self.cache);
+            if d.publication.is_some() {
+                result?;
+            }
         } else {
             // Drop empty trailing frames on the last pages (one frame, nothing else there).
             while let Some(story) = d.story(sid) {
@@ -28,7 +31,7 @@ impl Session {
                     break;
                 }
                 let Some(&last) = story.frames.last() else { break };
-                let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+                let cs = self.cache.get(&d, sid, None);
                 if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
                     break;
                 }
@@ -42,9 +45,11 @@ impl Session {
                 }
             }
         }
+        d.sync_publication()?;
         if let Some(st) = self.active_mut() {
             st.doc = Arc::new(d);
             st.revision += 1;
         }
+        Ok(())
     }
 }

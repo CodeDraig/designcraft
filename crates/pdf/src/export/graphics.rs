@@ -57,10 +57,11 @@ impl Exporter<'_> {
     }
 
     pub(super) fn load_image(&mut self, id: AssetId) -> Option<Image> {
-        if let Some(i) = self.images.get(&id) {
+        let asset = self.doc.assets.get(&id)?.clone();
+        let key = (Arc::as_ptr(&asset.data) as usize, asset.page);
+        if let Some(i) = self.images.get(&key) {
             return i.clone();
         }
-        let asset = self.doc.assets.get(&id)?.clone();
         let data = asset.data.clone();
         let fmt = image::guess_format(&data).ok();
         let img = match fmt {
@@ -83,7 +84,7 @@ impl Exporter<'_> {
         if img.is_none() {
             self.warn(format!("image `{}` could not be decoded and was skipped", asset.name));
         }
-        self.images.insert(id, img.clone());
+        self.images.insert(key, img.clone());
         img
     }
 
@@ -112,16 +113,17 @@ impl Exporter<'_> {
             return;
         }
         // Placed PDFs go in as vectors (the page as a form XObject).
-        let doc = self.doc;
+        let doc = self.doc.clone();
         if let Some(asset) = doc.assets.get(&g.asset)
             && asset.data.starts_with(b"%PDF")
         {
             let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
-            let placed = match self.pdfs.get(&g.asset) {
+            let key = (Arc::as_ptr(&asset.data) as usize, asset.page);
+            let placed = match self.pdfs.get(&key) {
                 Some(p) => p.clone(),
                 None => {
                     let p = self.placed_pdf(asset);
-                    self.pdfs.insert(g.asset, p.clone());
+                    self.pdfs.insert(key, p.clone());
                     p
                 }
             };
@@ -137,7 +139,8 @@ impl Exporter<'_> {
             && designcraft_images::is_svg(&asset.data)
         {
             let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
-            let tree = self.svgs.entry(g.asset).or_insert_with(|| designcraft_images::svg_tree(&asset.data).map(Arc::new)).clone();
+            let key = (Arc::as_ptr(&asset.data) as usize, asset.page);
+            let tree = self.svgs.entry(key).or_insert_with(|| designcraft_images::svg_tree(&asset.data).map(Arc::new)).clone();
             match tree {
                 Some(tree) => {
                     use krilla_svg::SurfaceExt;

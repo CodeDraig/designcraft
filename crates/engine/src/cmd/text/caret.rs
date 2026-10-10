@@ -15,6 +15,10 @@ fn hit_byte(s: &Session, frame: ItemId, pt: Point) -> Option<(StoryId, usize, Op
     let inner = xf.inverse() * pt;
     let cs = s.cache.get(&st.doc, sid, None);
     let fi = cs.frames.iter().position(|f| f.frame == frame)?;
+    if let Some((id, b)) = compose::hit_annotation(&cs, fi, inner) {
+        let entry = st.doc.publication.as_ref()?.root.annotation_entries().ok()?.into_iter().find(|e| e.identity.id == id)?;
+        return Some((entry.story, b, Some(CellAddr::annotation(id))));
+    }
     if let Some((table, row, col, b)) = compose::hit_cell(&cs, fi, inner) {
         return Some((sid, b, Some(CellAddr { table, row, col })));
     }
@@ -34,6 +38,14 @@ pub(super) fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
         s.execute("object.content", &json!({"ids": [frame.0], "type": "text"}))?;
     }
     let (sid, b, cell) = hit_byte(s, frame, pt).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    if let Some(id) = cell.and_then(|c| c.annotation_id()) {
+        let v = s.doc()?.doc.publication.as_ref().ok_or_else(|| bad("text.placeCaret", "publication missing"))?;
+        if v.root.annotation_entries()?.iter().any(|e| e.identity.id == id && e.component != v.component) {
+            let mut result = s.execute("publication.note.select", &json!({"id":id,"anchor":b,"focus":b}))?;
+            result["noteOwnerActivated"] = json!(true);
+            return Ok(result);
+        }
+    }
     // Drag and drop: a press inside the selected text keeps it (to be dragged).
     if !extend {
         s.text_drag = s.doc()?.selection.text.is_some_and(|t| t.story == sid && t.cell == cell && !t.range().is_empty() && t.range().contains(&b));
@@ -50,6 +62,8 @@ pub(super) fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
         && let Some(a) = t.cell
         && t.story == sid
         && a.table == c.table
+        && a.annotation_id().is_none()
+        && a.footnote_id().is_none()
         && (a.row, a.col) != (c.row, c.col)
     {
         let range = designcraft_doc::CellRange::new(a.row, a.col, c.row, c.col);
@@ -111,6 +125,16 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     let cs = s.cache.get(&st.doc, t.story, None);
     // In a cell, lines come from the cell's own composition.
     let cs = match t.cell {
+        Some(c) if c.annotation_id().is_some() => {
+            let mut joined = compose::ComposedStory::default();
+            for sid in st.doc.stories.keys() {
+                let carrier = s.cache.get(&st.doc, *sid, None);
+                for (_, _, fragment) in compose::annotation_fragments(&carrier, c.annotation_id().unwrap_or(0)) {
+                    joined.frames.extend(fragment.frames.iter().cloned());
+                }
+            }
+            std::sync::Arc::new(joined)
+        }
         Some(c) if c.footnote_id().is_some() => compose::find_note(&cs, c.row as u64).map(|(_, n)| n.text.clone()).unwrap_or(cs),
         Some(c) => compose::find_cell(&cs, c.table, c.row, c.col).map(|(_, _, pc)| pc.text.clone()).unwrap_or(cs),
         None => cs,

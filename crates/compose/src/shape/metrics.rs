@@ -38,6 +38,7 @@ pub(super) fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: T
         gid: face.glyph_for(' '),
         byte,
         len: ch.len_utf8(),
+        generated: None,
         ch,
         adv: 0.0,
         dx: 0.0,

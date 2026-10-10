@@ -87,7 +87,7 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
   Line breaks are identical on screen and in PDF.
 - **Fast.** Multithreaded SIMD rendering (vello_cpu), copy-on-write documents with O(1) undo
   snapshots, and cached composition.
-- **Open.** A documented native format, IDML import and export, PNG export, and PDF export.
+- **Open.** A documented native format, [publications and editions](docs/publications.md), [TEI P5 book import](docs/tei.md), IDML import and export, PNG export, and PDF export.
   PDF/X-4 output intent and built-in checks are implemented; certified conformance validation remains open.
   No subscription, no licence server, no telemetry.
 - **Agent-native.** Every menu item, tool gesture, panel control and dialog can be driven over a
@@ -141,7 +141,12 @@ current document's name and unsaved changes. The web build has no control channe
 DesignCraft is an engine-first Cargo workspace with enforced layering (`cargo xtask layers`). The
 egui frontend is a separate crate, so the UI can be swapped without touching the engine.
 
-Native `.designcraft` files use the current ZIP container and document model. Historical
+Native `.designcraft` files use a ZIP container. Standalone documents normally save as
+version 2, including unchanged TEI sources and import reports. Structured apparatus
+and self-contained publications require version 3; publications keep canonical content
+and separate edition layouts. Versions 1 and 2 still
+open; older builds reject versions they do not support. See [publications](docs/publications.md)
+and [TEI import and preservation](docs/tei.md). Historical
 single-file JSON documents and automatic schema upgrades are not supported. IDML import uses
 per-corner options and property-element text insets.
 

@@ -222,7 +222,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let width = 72.0 * ncols_kept as f64;
     let t = Table::from_strings(1, &rows, width, &ParaFormat::default(), &CharFormat::default());
     story.insert_table(0, t);
-    Ok(Imported { story, para_styles: vec![], char_styles: vec![], warnings })
+    Ok(Imported { tei: None, story, para_styles: vec![], char_styles: vec![], warnings })
 }
 
 #[cfg(test)]

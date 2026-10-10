@@ -53,6 +53,14 @@ impl RunStyle {
     }
 }
 
+/// Source-bound generated text keeps Unicode and destination identities after shaping. A None
+/// cluster is a continuation of the preceding glyph's cluster, not another copy of its text.
+#[derive(Clone, Debug)]
+pub struct GeneratedGlyph {
+    pub text: Option<Arc<str>>,
+    pub target: Option<u64>,
+}
+
 /// A positioned glyph. `x` is absolute in frame inner space; `y` is relative to the line baseline.
 #[derive(Clone, Debug)]
 pub struct PlacedGlyph {
@@ -66,6 +74,7 @@ pub struct PlacedGlyph {
     pub style: u32,
     pub byte: usize,
     pub len: usize,
+    pub generated: Option<crate::GeneratedGlyph>,
     /// Control characters (tabs, breaks, markers' carriers) are not drawn.
     pub visible: bool,
     /// Stays upright in vertical frames (CJK ideographs, kana, hangul, full-width forms).
@@ -189,6 +198,9 @@ pub struct PlacedNote {
     /// Footnote id (in the story's [`designcraft_doc::Story::notes`]) and its index there.
     pub id: u64,
     pub index: usize,
+    pub annotation: Option<u64>,
+    pub source_story: Option<Arc<designcraft_doc::Story>>,
+    pub source_range: Range<usize>,
     pub column: u32,
     /// The number shown.
     pub label: String,
@@ -204,12 +216,19 @@ pub struct PlacedNote {
 #[derive(Clone, Debug, Default)]
 pub struct ComposedStory {
     pub story: StoryId,
+    pub source: Option<Arc<designcraft_doc::Story>>,
+    /// A gathered note renders with the assets and swatches of its canonical owner.
+    pub render_document: Option<Arc<designcraft_doc::Document>>,
     pub rev: u64,
     pub frames: Vec<FrameText>,
     /// First byte that didn't fit (overset text), if any.
     pub overset_at: Option<usize>,
     pub styles: Vec<RunStyle>,
     pub text_len: usize,
+    /// Notes whose text has not reached a frame. Autoflow accounts for this progress too.
+    pub annotation_overflow: Vec<u64>,
+    pub annotation_progress: usize,
+    pub diagnostics: Vec<String>,
 }
 
 impl ComposedStory {

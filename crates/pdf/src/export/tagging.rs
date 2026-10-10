@@ -1,6 +1,6 @@
 //! Reading-order tags and content structure.
 
-use super::{Affine, Artifact, ArtifactType, Content, ContentTag, Exporter, Item, Surface, Tag, TagGroup, TagTree};
+use super::{Affine, Artifact, ArtifactType, Content, ContentTag, Exporter, Item, Surface, Tag, TagGroup};
 
 impl Exporter<'_> {
     /// A spread or parent item, inside its structure tag when tagging.
@@ -40,8 +40,8 @@ impl Exporter<'_> {
 
     /// The structure tree: stories (one paragraph each, its frames in thread order of appearance)
     /// and figures, in the order they first appear.
-    pub(super) fn tag_tree(&mut self) -> TagTree {
-        let mut tree = TagTree::new();
+    pub(super) fn tag_groups(&mut self) -> Vec<TagGroup> {
+        let mut tree = Vec::new();
         for e in std::mem::take(&mut self.tags) {
             match e {
                 TagEntry::Story(sid) => {
@@ -73,6 +73,7 @@ impl Exporter<'_> {
                 TagEntry::Figure(g) => tree.push(g),
             }
         }
+        self.story_tags.clear();
         tree
     }
 }

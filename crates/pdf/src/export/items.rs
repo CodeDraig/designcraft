@@ -8,7 +8,7 @@ use designcraft_geom::kurbo::Shape as _;
 
 impl Exporter<'_> {
     pub(super) fn spread(&mut self, s: &mut Surface, si: usize) {
-        let doc = self.doc;
+        let doc = self.doc.clone();
         let Some(sp) = doc.spreads.get(si) else { return };
         let first = doc.first_page_of_spread(si);
         for layer in doc.layers.iter().rev() {
@@ -70,7 +70,7 @@ impl Exporter<'_> {
         }
     }
 
-    pub(super) fn item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
+    pub(crate) fn item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page_name: Option<&str>) {
         let gf = &it.effects.gradient_feather;
         if !gf.on || it.hidden || it.nonprinting {
             return self.item_inner(s, it, parent, page_name);
@@ -189,7 +189,7 @@ impl Exporter<'_> {
             }
             return;
         }
-        let doc = self.doc;
+        let doc = self.doc.clone();
         let bp = if it.corners.is_none() { it.path.to_bezpath() } else { corners::apply(&it.path, &it.corners) };
         let path = to_path(&bp);
         let pushes = Self::push_group(s, it.opacity, it.blend);
@@ -240,7 +240,7 @@ impl Exporter<'_> {
                 }
             }
             Content::Text(tfr) => {
-                let cs = self.cache.get(doc, tfr.story, page_name);
+                let cs = self.cache.get(&doc, tfr.story, page_name);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
                     // Type on a path: the glyphs as outlines along the path.
                     for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, &bp, pt) {
@@ -285,7 +285,7 @@ impl Exporter<'_> {
         if let Content::Text(tfr) = &it.content
             && let Some(st) = doc.story(tfr.story).filter(|st| !st.objects.is_empty())
         {
-            let cs = self.cache.get(doc, tfr.story, page_name);
+            let cs = self.cache.get(&doc, tfr.story, page_name);
             if let Some(ft) = cs.frame(it.id) {
                 for o in &ft.objects {
                     if let Some(obj) = st.objects.get(o.index) {

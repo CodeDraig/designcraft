@@ -7,8 +7,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum HyperlinkSource {
-    Item { id: ItemId },
-    Text { story: StoryId, start: usize, end: usize },
+    Item {
+        id: ItemId,
+    },
+    Text {
+        story: StoryId,
+        start: usize,
+        end: usize,
+    },
+    /// Boundaries that move with text edits (used by imported TEI references).
+    Anchors {
+        start: u64,
+        end: u64,
+    },
 }
 
 /// Where a hyperlink goes.
@@ -19,6 +30,8 @@ pub enum HyperlinkDest {
     Email(String),
     /// Absolute page index.
     Page(usize),
+    /// A text destination whose page is resolved after composition.
+    Anchor(u64),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,4 +75,19 @@ pub struct Bookmark {
     pub page: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Bookmark>,
+}
+
+impl HyperlinkSource {
+    /// Current text range, resolving marker boundaries after edits and threading.
+    pub fn text_range(&self, doc: &crate::Document) -> Option<(StoryId, usize, usize)> {
+        match self {
+            Self::Text { story, start, end } => Some((*story, *start, *end)),
+            Self::Anchors { start, end } => {
+                let (sid, a) = doc.find_anchor(*start)?;
+                let (end_sid, b) = doc.find_anchor(*end)?;
+                (sid == end_sid && a <= b).then_some((sid, a, b.max(a + crate::ANCHOR_MARK.len_utf8())))
+            }
+            Self::Item { .. } => None,
+        }
+    }
 }

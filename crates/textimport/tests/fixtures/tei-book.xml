@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TEI xmlns="http://www.tei-c.org/ns/1.0" xml:lang="en">
+  <teiHeader>
+    <fileDesc>
+      <titleStmt><title>The Glass Orchard</title><author>DesignCraft test authors</author></titleStmt>
+      <editionStmt><edition>Importer acceptance edition</edition></editionStmt>
+      <publicationStmt><p>Original test text</p><availability><p>MIT OR Apache-2.0</p></availability><idno>dc-tei-test-1</idno></publicationStmt>
+      <sourceDesc><p>A synthetic book written to exercise import behavior.</p><listWit><witness xml:id="A">First manuscript</witness><witness xml:id="B">Second manuscript</witness></listWit></sourceDesc>
+    </fileDesc>
+    <encodingDesc><tagsDecl><rendition xml:id="emphasis" scheme="css">font-style: italic; font-weight: bold</rendition></tagsDecl><charDecl><char xml:id="longs"><mapping type="unicode">U+017F</mapping></char></charDecl></encodingDesc>
+    <profileDesc><langUsage><language ident="en">English</language></langUsage></profileDesc>
+  </teiHeader>
+  <text>
+    <front><titlePage><docTitle><titlePart>The Glass Orchard</titlePart></docTitle><docAuthor>DesignCraft test authors</docAuthor></titlePage><div><head>Preface</head><p>A book for testing <hi rendition="#emphasis">editable</hi> text.</p></div></front>
+    <body>
+      <div xml:id="chapter-one"><head>At the Gate</head><pb n="1"/>
+        <p>The <choice><sic>gaet</sic><corr>gate</corr></choice> opened onto an <choice><orig>olde</orig><reg>old</reg></choice> orchard. <choice><abbr>Dr.</abbr><expan>Doctor</expan></choice> Vale waited there.</p>
+        <p>A <app><lem wit="#A">silver</lem><rdg wit="#B">golden</rdg></app> bell rang.<note><p>The bell was <hi rend="italic">small</hi>.</p><p>Its handle was wood.</p></note> The keeper wrote <g ref="#longs"/> in his book.</p>
+        <p>They crossed the thresh<lb break="no"/>old and saw <supplied>three</supplied> trees, <unclear>perhaps</unclear> four. <del>A discarded sentence.</del><add>A restored sentence.</add> Then <gap reason="torn leaf"/>.</p>
+        <list type="ordered"><item n="1.">A key</item><item n="2.">A lantern</item></list>
+        <figure><graphic url="orchard.svg" width="200pt"/><head>The orchard plan</head><figDesc>Three trees beside a gate.</figDesc></figure>
+        <table><row role="label"><cell cols="2">Harvest</cell></row><row><cell rows="2">Apples</cell><cell>12</cell></row><row><cell>14</cell></row></table>
+        <p>Continue to <ref target="#verse">the song</ref> or <ref target="https://tei-c.org/">the TEI site</ref>.</p>
+      </div>
+      <div xml:id="verse"><head>The Song</head><pb n="2"/><lg><l>Under glass the branches bend,</l><l>Words take root and lines extend.</l></lg><lg><l>Every leaf retains its name,</l><l>Though the pages change their frame.</l></lg></div>
+      <div><head>A Short Scene</head><castList><castItem><role>KEEPER</role><roleDesc>guardian of the orchard</roleDesc></castItem></castList><sp><speaker>KEEPER</speaker><stage>Opens the gate.</stage><p>Bring the book inside.</p></sp><sp><speaker>VALE</speaker><p>Every word is here.</p></sp></div>
+    </body>
+    <back><div><head>Afterword</head><p>The last page.<note place="margin">A marginal observation.</note><note place="end"><p>A final note.</p><p>Its second paragraph survives.</p></note></p><formula notation="unimplemented">x + y</formula></div></back>
+  </text>
+</TEI>

@@ -68,6 +68,9 @@ pub struct Session {
     pub(crate) tool: Box<dyn designcraft_tools::Tool>,
     pub journal: Vec<(String, Value)>,
     pub clipboard: Option<Arc<Document>>,
+    pub clipboard_origin: Option<u64>,
+    pub text_clipboard_origin: Option<u64>,
+    pub text_clipboard_cut: Option<designcraft_doc::ComponentId>,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
     /// Copied text with its formatting (a frameless story slice) and its plain text.
@@ -108,6 +111,9 @@ impl Session {
             tool: designcraft_tools::create("selection"),
             journal: vec![],
             clipboard: None,
+            clipboard_origin: None,
+            text_clipboard_origin: None,
+            text_clipboard_cut: None,
             recovery_dir: None,
             text_clipboard: None,
             ui_requests: vec![],
@@ -218,7 +224,17 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// document as it was (see [`guard`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
-        self.guarded(id, |s| s.execute_unguarded(id, params))
+        let checkpoint = self.active().filter(|s| s.doc.publication.is_some()).cloned();
+        let journal = self.journal.len();
+        let result = self.guarded(id, |s| s.execute_unguarded(id, params));
+        if result.is_err()
+            && let Some(before) = checkpoint
+            && let Some(current) = self.active_mut().filter(|s| s.uid == before.uid)
+        {
+            *current = before;
+            self.journal.truncate(journal);
+        }
+        result
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
@@ -242,8 +258,40 @@ impl Session {
         if id != "data.preview" && (spec.undoable || spec.journal) {
             self.stop_data_preview();
         }
-        let before = self.active().map(|d| (d.uid, d.doc.clone()));
+        let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
+        let layout_cache = self.cache.clone();
+        if (id.starts_with("file.export") || id == "file.printBooklet")
+            && !matches!(id, "file.exportPdf" | "file.exportEpub" | "file.exportFixedEpub" | "file.exportHtml")
+            && params.get("edition").is_none()
+            && let Some(st) = self.active_mut()
+            && st.doc.publication.is_some()
+        {
+            let mut d = (*st.doc).clone();
+            cmd::publication::update::refresh(&mut d, true, &layout_cache)?;
+            if d != *st.doc {
+                st.doc = Arc::new(d);
+            }
+        }
+        // Default publication exports publish their successful derived update, preserving the
+        // existing live/deferred contract. A failed export or an explicitly selected edition
+        // must leave the editor's current projection and selection untouched.
+        let export_update = if matches!(id, "file.exportPdf" | "file.exportEpub" | "file.exportFixedEpub" | "file.exportHtml")
+            && params.get("edition").is_none()
+            && let Some(st) = self.active().filter(|st| st.doc.publication.is_some())
+        {
+            let mut candidate = (*st.doc).clone();
+            cmd::publication::update::refresh(&mut candidate, true, &layout_cache)?;
+            Some((st.uid, candidate))
+        } else {
+            None
+        };
         let r = (spec.run)(self, params)?;
+        if let Some((uid, candidate)) = export_update
+            && let Some(st) = self.active_mut().filter(|st| st.uid == uid)
+            && candidate != *st.doc
+        {
+            st.doc = Arc::new(candidate);
+        }
         // Undo, redo or deleting layers can take the active layer away: new objects would land on
         // a layer that isn't there (invisible, not exported). Fall back to the top layer.
         if let Some(st) = self.active_mut()
@@ -253,7 +301,7 @@ impl Session {
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
+            self.smart_reflow()?;
         }
         // Live captions follow their sources.
         if spec.undoable
@@ -263,17 +311,31 @@ impl Session {
         {
             let mut d = (*st.doc).clone();
             if cmd::captions::refresh_live(&mut d) {
+                d.sync_publication()?;
+                st.doc = Arc::new(d);
+            }
+        }
+        // Generated fields and reflow are part of the initiating edit's one undo snapshot.
+        if spec.undoable
+            && id != "publication.update"
+            && let Some(st) = self.active_mut()
+            && st.interaction.is_none()
+            && st.doc.publication.is_some()
+        {
+            let mut d = (*st.doc).clone();
+            cmd::publication::update::refresh(&mut d, false, &layout_cache)?;
+            if d != *st.doc {
                 st.doc = Arc::new(d);
             }
         }
         // Record undo if the document changed (and we're not previewing an interaction).
-        if let (Some((uid, old)), Some(st)) = (before, self.active_mut())
+        if let (Some((uid, old, selection)), Some(st)) = (before, self.active_mut())
             && st.uid == uid
             && !Arc::ptr_eq(&old, &st.doc)
             && st.interaction.is_none()
             && spec.undoable
         {
-            let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection: st.selection.clone() };
+            let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection };
             record_undo(st, entry);
         }
         if spec.journal {
@@ -318,6 +380,7 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         doc.sync_endnote_story();
+        doc.sync_publication()?;
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.revision += 1;

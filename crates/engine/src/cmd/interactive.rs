@@ -46,7 +46,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let h = st.doc.hyperlinks.iter().find(|h| h.id == id).cloned().ok_or_else(|| bad("hyperlink.goToSource", format!("no hyperlink {id}")))?;
             st.selection = match h.source {
                 HyperlinkSource::Item { id } => designcraft_doc::Selection::items(vec![id]),
-                HyperlinkSource::Text { story, start, end } => {
+                src @ (HyperlinkSource::Text { .. } | HyperlinkSource::Anchors { .. }) => {
+                    let (story, start, end) = src.text_range(&st.doc).ok_or_else(|| bad("hyperlink.goToSource", "link boundaries were removed"))?;
                     let frame = st.doc.story(story).and_then(|x| x.frames.first().copied());
                     designcraft_doc::Selection::text(designcraft_doc::TextSel { story, anchor: start, focus: end, frame, cell: None })
                 }
@@ -122,6 +123,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
                 HyperlinkDest::Url(u) => u.clone(),
                 HyperlinkDest::Email(e) => e.clone(),
                 HyperlinkDest::Page(p) => format!("Page {}", p + 1),
+                HyperlinkDest::Anchor(a) => format!("Anchor {a}"),
             });
             d.hyperlinks.push(Hyperlink { id, name, source: src, dest: dest.clone() });
             ids.push(id);

@@ -82,7 +82,7 @@ impl Story {
 
     /// Mutable endnote (copy-on-write); bumps the story revision.
     pub fn endnote_mut(&mut self, id: u64) -> Option<&mut Footnote> {
-        let n = self.endnotes.iter_mut().find(|n| n.id == id)?;
+        let n = Arc::make_mut(&mut self.content).endnotes.iter_mut().find(|n| n.id == id)?;
         self.rev += 1;
         Some(Arc::make_mut(n))
     }
@@ -104,7 +104,8 @@ impl Story {
             let id = self.endnotes.iter().map(|x| x.id).max().unwrap_or(0) + 1;
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
-            self.endnotes.insert((k + i).min(self.endnotes.len()), Arc::new(Footnote { id, text }));
+            let at = (k + i).min(self.endnotes.len());
+            self.endnotes.insert(at, Arc::new(Footnote { id, text, annotation: None, apparatus: None }));
         }
     }
 
@@ -113,29 +114,98 @@ impl Story {
         if n != self.endnotes.len() {
             return Err(format!("story {}: {n} endnote references, {} endnotes", self.id.0, self.endnotes.len()));
         }
+        let mut ids = std::collections::BTreeSet::new();
+        for note in &self.endnotes {
+            if !ids.insert(note.id) {
+                return Err(format!("story {}: duplicate endnote {}", self.id.0, note.id));
+            }
+            note.text.check()?;
+            if let Some(apparatus) = &note.apparatus {
+                apparatus.check()?;
+            }
+        }
         Ok(())
     }
 }
 
 impl crate::Document {
-    /// Stories with endnotes in numbering order (page of their first frame, then id).
-    fn endnote_order(&self) -> Vec<&Story> {
-        let key = |st: &Story| -> (usize, u64) { (st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX), st.id.0) };
-        let mut v: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|s| !s.endnotes.is_empty()).collect();
-        v.sort_by_key(|s| key(s));
-        v
+    /// Append a newly created, empty frame to the generated endnote story. Ordinary threading
+    /// must keep rejecting merges into generated text, whose source is its note records.
+    pub fn extend_endnote_frame(&mut self, frame: crate::ItemId) -> crate::Result<()> {
+        let sid = self.endnote_story.ok_or_else(|| crate::DocError::Invalid("no generated endnote story".into()))?;
+        self.story(sid).ok_or(crate::DocError::NoStory(sid))?;
+        let target = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(crate::DocError::NoItem(frame))?;
+        let st = self.story(target).ok_or(crate::DocError::NoStory(target))?;
+        if target == sid || !st.text.is_empty() || st.frames != [frame] || st.link.is_some() {
+            return Err(crate::DocError::Invalid("endnote extension requires one new empty text frame".into()));
+        }
+        crate::threading::allowed(self, target, None)?;
+        if let Some(item) = self.item_mut(frame)
+            && let crate::Content::Text(text) = &mut item.content
+        {
+            text.story = sid;
+        }
+        self.stories.remove(&target);
+        if let Some(st) = self.story_mut(sid) {
+            st.frames.push(frame);
+            st.rev = st.rev.saturating_add(1);
+        }
+        Ok(())
     }
 
-    /// Number of the first endnote of story `sid`.
-    pub fn endnote_start(&self, sid: StoryId) -> u32 {
-        let mut n = self.endnote_options.start_at;
-        for st in self.endnote_order() {
-            if st.id == sid {
-                break;
+    /// Endnotes in reading order, including references within tables and footnotes.
+    pub fn ordered_endnotes(&self) -> Vec<(StoryId, usize, &Footnote)> {
+        fn collect<'a>(st: &'a Story, out: &mut Vec<(StoryId, usize, &'a Footnote)>) {
+            if st.notes.is_empty() && st.tables.is_empty() {
+                out.extend(st.endnotes.iter().enumerate().map(|(i, n)| (st.id, i, &**n)));
+                return;
             }
-            n += st.endnotes.len() as u32;
+            let (mut endnote, mut footnote) = (0, 0);
+            for (pos, ch) in st.text.char_indices() {
+                match ch {
+                    ENDNOTE_REF => {
+                        if let Some(n) = st.endnotes.get(endnote) {
+                            out.push((st.id, endnote, n));
+                        }
+                        endnote += 1;
+                    }
+                    crate::FOOTNOTE_REF => {
+                        if let Some(n) = st.notes.get(footnote) {
+                            collect(&n.text, out);
+                        }
+                        footnote += 1;
+                    }
+                    crate::TABLE_ANCHOR => {
+                        if let Some(t) = st.table_at(pos).and_then(|id| st.tables.get(&id)) {
+                            for cell in &t.cells {
+                                collect(&cell.text, out);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
-        n
+        let mut roots: Vec<_> = self.stories.values().filter(|s| Some(s.id) != self.endnote_story).collect();
+        roots.sort_by_key(|s| (s.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX), s.id.0));
+        let mut out = Vec::new();
+        for st in roots {
+            collect(st, &mut out);
+        }
+        out
+    }
+
+    /// Display numbers for a story's references. Nested table notes may interrupt the sequence.
+    pub fn endnote_numbers(&self, sid: StoryId) -> Vec<u32> {
+        self.ordered_endnotes()
+            .iter()
+            .enumerate()
+            .filter(|(_, (s, _, _))| *s == sid)
+            .map(|(i, _)| self.endnote_options.start_at.saturating_add(i as u32))
+            .collect()
+    }
+    pub fn endnote_start(&self, sid: StoryId) -> u32 {
+        self.endnote_numbers(sid).first().copied().unwrap_or(self.endnote_options.start_at)
     }
 
     /// The endnote frame's text: the heading, then "number separator text" per endnote, in order.
@@ -143,24 +213,19 @@ impl crate::Document {
         let o = &self.endnote_options;
         let para = |style: &str| ParaFormat { style: style.to_string(), ..Default::default() };
         let mut out = Story::with_text(id, &o.heading, para(&o.heading_style));
-        let mut n = o.start_at;
-        for st in self.endnote_order() {
-            for note in &st.endnotes {
-                let at = out.len();
-                let first = at == 0 && o.heading.is_empty();
-                if !first {
-                    out.insert(at, "\n");
-                }
-                let pi = out.paras.len() - 1;
-                out.paras[pi] = para(&o.para_style);
-                let at = out.len();
-                out.insert_with(at, &format!("{}{}", o.label(n), o.separator), CharFormat::default());
-                for (r, f) in note.text.runs() {
-                    let at = out.len();
-                    out.insert_with(at, &note.text.text[r].replace('\n', " "), f.clone());
-                }
-                n += 1;
+        for (k, (_, _, note)) in self.ordered_endnotes().into_iter().enumerate() {
+            let n = o.start_at.saturating_add(k as u32);
+            let at = out.len();
+            let first = at == 0 && o.heading.is_empty();
+            if !first {
+                out.insert(at, "\n");
             }
+            let pi = out.paras.len() - 1;
+            out.paras[pi] = para(&o.para_style);
+            let at = out.len();
+            out.insert_with(at, &format!("{}{}", o.label(n), o.separator), CharFormat::default());
+            let at = out.len();
+            out.insert_story_preserving_anchors(at, &note.text);
         }
         out
     }
@@ -173,7 +238,10 @@ impl crate::Document {
             return;
         };
         let fresh = self.endnote_text(sid);
-        if cur.text == fresh.text && cur.paras == fresh.paras && cur.chars == fresh.chars {
+        let mut comparable = (**cur).clone();
+        comparable.frames.clear();
+        comparable.rev = fresh.rev;
+        if comparable == fresh {
             return;
         }
         let Some(st) = self.stories.get_mut(&sid) else { return };

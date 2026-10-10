@@ -493,6 +493,7 @@ impl<'r> Importer<'r> {
             endnote_story: None,
             sections: std::mem::take(&mut self.sections),
             assets: std::mem::take(&mut self.assets),
+            tei_sources: vec![],
             hyperlinks: vec![],
             data_merge: Default::default(),
             bookmarks: vec![],
@@ -507,6 +508,7 @@ impl<'r> Importer<'r> {
             modified: 0,
             next_id: self.next_id,
             font_scope: 0,
+            publication: None,
         };
         Ok(d)
     }

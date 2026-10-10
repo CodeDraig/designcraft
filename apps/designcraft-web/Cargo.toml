@@ -9,6 +9,14 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+browser-checks = []
+
+[[bin]]
+name = "browser-recovery-check"
+path = "checks/recovery.rs"
+required-features = ["browser-checks"]
+
 [[bin]]
 name = "designcraft-web"
 path = "src/main.rs"
@@ -27,4 +35,4 @@ rfd = { workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration", "IdbFactory", "IdbOpenDbRequest", "IdbRequest", "IdbDatabase", "IdbObjectStore", "IdbTransaction", "IdbTransactionMode", "Event", "DomException", "DomStringList"] }

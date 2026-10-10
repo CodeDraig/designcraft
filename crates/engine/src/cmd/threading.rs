@@ -183,7 +183,7 @@ mod tests {
                 st.insert_endnote(st.len(), label, Default::default());
                 st.insert(st.len(), &designcraft_doc::endnotes::NOTE_MARK.to_string());
                 let anchor = st.insert_anchor(st.len(), label);
-                st.insert_xref(st.len(), CrossRef { target: anchor, format: "Paragraph Text".into() });
+                st.insert_xref(st.len(), CrossRef { target: anchor, format: "Paragraph Text".into(), field: None });
                 st.insert_index_ref(st.len(), IndexRef { topics: vec![label.into()], ..Default::default() });
                 st.insert_object(st.len(), AnchoredObject::new(obj, Default::default()));
                 let mut table = Table::new(1, 1, 1, 0, 0, 80.0);

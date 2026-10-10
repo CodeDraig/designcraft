@@ -179,6 +179,8 @@ fn line_box(l: &Line) -> Option<Rect> {
 
 impl Renderer {
     pub(crate) fn draw_text(&mut self, ctx: &mut RenderContext, f: &Frame, cs: &Arc<ComposedStory>, ft: &FrameText, xf: Affine) {
+        let owner = cs.render_document.as_deref().map(|doc| Frame { doc, ..*f });
+        let f = owner.as_ref().unwrap_or(f);
         let doc = f.doc;
         let m = f.view * xf;
         // Visible area in frame space.
@@ -393,7 +395,7 @@ impl Renderer {
         }
         // Anchored objects ride on their lines.
         if !ft.objects.is_empty()
-            && let Some(st) = doc.story(cs.story)
+            && let Some(st) = cs.source.as_deref().or_else(|| doc.story(cs.story))
         {
             for o in &ft.objects {
                 if let Some(obj) = st.objects.get(o.index) {

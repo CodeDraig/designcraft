@@ -31,7 +31,11 @@ impl Importer<'_> {
                 tables.insert(t.id, Arc::new(t));
             }
         }
-        let notes = notes.into_iter().enumerate().map(|(i, text)| Arc::new(designcraft_doc::Footnote { id: i as u64 + 1, text })).collect();
+        let notes = notes
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| Arc::new(designcraft_doc::Footnote { id: i as u64 + 1, text, annotation: None, apparatus: None }))
+            .collect();
         let mut anchor_list = Vec::new();
         for (k, (me, name)) in anchors.into_iter().enumerate() {
             let aid = (id.0 << 24) | (k as u64 + 1);
@@ -42,13 +46,23 @@ impl Importer<'_> {
         for (k, (me, fmt)) in xrefs.into_iter().enumerate() {
             self.xref_srcs.insert(me, (id, k));
             let format = self.xref_format_names.get(&fmt).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
-            xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format }));
+            xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format, field: None }));
         }
         let mut st = Story {
             id,
-            text,
-            paras,
-            chars,
+            content: Arc::new(designcraft_doc::StoryContent {
+                text,
+                paras,
+                chars,
+                tables,
+                notes,
+                endnotes: Vec::new(),
+                anchors: anchor_list,
+                xrefs: xref_list,
+                index_refs: index_refs.into_iter().map(Arc::new).collect(),
+                objects: objects.into_iter().map(Arc::new).collect(),
+                editorial: Vec::new(),
+            }),
             frames: vec![],
             direction: if e.find("StoryPreference").and_then(|p| p.get("StoryDirection")) == Some("RightToLeftDirection") {
                 designcraft_doc::TextDirection::RightToLeft
@@ -57,14 +71,6 @@ impl Importer<'_> {
             },
             vertical: e.find("StoryPreference").and_then(|p| p.get("StoryOrientation")) == Some("Vertical"),
             rev: 0,
-            tables,
-            notes,
-            endnotes: Vec::new(),
-            anchors: anchor_list,
-            xrefs: xref_list,
-            index_refs: index_refs.into_iter().map(Arc::new).collect(),
-            objects: objects.into_iter().map(Arc::new).collect(),
-            editorial: Vec::new(),
             link: None,
         };
         st.fix_notes();

@@ -12,6 +12,28 @@ use serde_json::{Value, json};
 
 use crate::{DocState, EngineError, Result, Session};
 
+/// A complete recoverable archive. Hosts may persist these in a filesystem or browser storage;
+/// the editor uses the same serialization and retains every publication component.
+#[derive(Clone, Debug)]
+pub struct RecoverySnapshot {
+    pub uid: u64,
+    pub title: String,
+    pub revision: u64,
+    pub bytes: Vec<u8>,
+}
+
+pub fn snapshots(s: &Session) -> Result<Vec<RecoverySnapshot>> {
+    s.documents()
+        .iter()
+        .filter(|st| st.is_dirty())
+        .map(|st| {
+            let bytes =
+                designcraft_format::save(st.preview_stash.as_deref().unwrap_or(st.doc.as_ref())).map_err(|e| EngineError::Other(e.to_string()))?;
+            Ok(RecoverySnapshot { uid: st.uid, title: st.title(), revision: st.revision, bytes })
+        })
+        .collect()
+}
+
 /// The platform's per-user recovery folder.
 pub fn default_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -46,7 +68,7 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             continue;
         }
         let (doc, meta) = files(dir, d.uid);
-        let bytes = crate::cmd::to_bytes(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()));
+        let bytes = designcraft_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| EngineError::Other(e.to_string()))?;
         // Write then rename, so a crash mid-write never leaves a torn file.
         let tmp = doc.with_extension("tmp");
         std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &doc)).map_err(|e| EngineError::Other(format!("{}: {e}", doc.display())))?;
@@ -96,7 +118,7 @@ pub fn open(s: &mut Session, dir: &Path) -> Result<Vec<usize>> {
         let mut st = DocState::new(d, path);
         st.fonts = fonts;
         // Unsaved: the copy on disk (if any) is older than what was recovered.
-        st.saved_doc = std::sync::Arc::new((*st.doc).clone());
+        st.saved_doc = std::sync::Arc::new(designcraft_doc::Document::new(&Default::default()));
         st.revision += 1;
         opened.push(s.add_document(st));
         discard(dir, uid);

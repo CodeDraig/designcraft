@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text?, format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader|publicationValue|publicationNumber, text?, key?, metadata?:bool, sequence?, object?, format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -91,6 +91,23 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
     let kind = match str_param(p, "type").unwrap_or("custom") {
         "custom" => VarKind::Custom { text: str_param(p, "text").unwrap_or("").into() },
+        "publicationValue" => VarKind::PublicationValue {
+            key: str_param(p, "key").ok_or_else(|| bad("variables.define", "publicationValue needs key"))?.into(),
+            metadata: p.get("metadata").and_then(Value::as_bool).unwrap_or(false),
+        },
+        "publicationNumber" => VarKind::PublicationNumber {
+            sequence: str_param(p, "sequence").ok_or_else(|| bad("variables.define", "publicationNumber needs sequence"))?.into(),
+            object: p
+                .get("object")
+                .filter(|v| !v.is_null())
+                .map(|v| {
+                    v.as_u64()
+                        .filter(|id| *id > 0)
+                        .map(designcraft_doc::SemanticId)
+                        .ok_or_else(|| bad("variables.define", "object must be a positive identity"))
+                })
+                .transpose()?,
+        },
         "lastPageNumber" => VarKind::LastPageNumber { section: p.get("section").and_then(Value::as_bool).unwrap_or(false) },
         "chapterNumber" => VarKind::ChapterNumber,
         "fileName" => VarKind::FileName { extension: p.get("extension").and_then(Value::as_bool).unwrap_or(false) },

@@ -22,6 +22,7 @@ use layers::yes;
 pub use layers::{LAYER_COLORS, Layer};
 mod assets;
 pub use assets::Asset;
+pub mod tei;
 
 pub mod anchored;
 pub mod arabic;
@@ -38,6 +39,7 @@ pub mod item;
 pub mod notes;
 pub mod otf;
 pub mod page;
+pub mod publication;
 pub mod selection;
 mod slice;
 pub mod story;
@@ -220,6 +222,9 @@ pub struct Document {
     pub sections: Vec<Section>,
     #[serde(default)]
     pub assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Unchanged TEI originals and import receipts, retained through editing and undo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tei_sources: Vec<Arc<tei::TeiSource>>,
     /// Hyperlinks (Window → Interactive → Hyperlinks).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hyperlinks: Vec<Hyperlink>,
@@ -262,6 +267,10 @@ pub struct Document {
     /// saved.
     #[serde(skip)]
     pub font_scope: u32,
+    /// Active component/edition projection. The native archive writes its canonical publication
+    /// separately; snapshots retain the whole root, including all inactive components.
+    #[serde(skip)]
+    pub publication: Option<publication::PublicationView>,
 }
 
 impl Document {

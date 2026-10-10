@@ -41,6 +41,7 @@ mod place_text;
 pub mod preflight;
 mod prefs;
 mod print;
+pub(crate) mod publication;
 mod qr;
 mod scripts;
 mod select;
@@ -49,6 +50,7 @@ mod states;
 mod strokes;
 mod style;
 pub mod table;
+mod tei;
 pub mod text;
 mod threading;
 mod toc;
@@ -152,6 +154,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(|| {
         let mut v = Vec::new();
         v.extend(file::specs());
+        v.extend(tei::specs());
         v.extend(interchange::specs());
         v.extend(export::specs());
         v.extend(edit::specs());
@@ -162,6 +165,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(articles::specs());
         v.extend(paths::specs());
         v.extend(book::specs());
+        v.extend(publication::specs());
         v.extend(buttons::specs());
         v.extend(captions::specs());
         v.extend(colorsettings::specs());
@@ -302,4 +306,4 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
 pub(crate) use datamerge::sync_placeholders;
 pub(crate) use file::load_document_fonts;
 pub use file::{base64_decode, base64_encode, from_bytes, to_bytes};
-pub(crate) use place_text::autoflow as place_text_autoflow;
+pub(crate) use place_text::autoflow_with_cache as place_text_autoflow_cached;

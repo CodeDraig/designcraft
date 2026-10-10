@@ -97,6 +97,11 @@ impl Exporter<'_> {
     }
 
     pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
+        if self.opts.tagged && (!ft.notes.is_empty() || !ft.tables.is_empty()) {
+            self.warn("Tagged PDF: table and note text is searchable but does not yet have semantic structure tags");
+        }
+        let prior = cs.render_document.as_ref().map(|d| std::mem::replace(&mut self.doc, crate::export::DocumentContext::Composed(d.clone())));
+        let story = cs.source.as_ref().map_or(story, |s| s.text.as_str());
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
             for d in &ft.decos {
@@ -154,6 +159,13 @@ impl Exporter<'_> {
                     me.fill_rect(s, r, c);
                 }
             }
+            if let Some(source) = &cs.source {
+                for o in &ft.objects {
+                    if let Some(object) = source.objects.get(o.index) {
+                        me.item(s, &object.item, Affine::translate(o.origin.to_vec2()), None);
+                    }
+                }
+            }
             for n in &ft.notes {
                 if let Some(nft) = n.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
@@ -162,6 +174,9 @@ impl Exporter<'_> {
                 }
             }
         });
+        if let Some(doc) = prior {
+            self.doc = doc;
+        }
     }
 
     /// Table fragments: cell fills, cell text (real text), edges and the border.
@@ -235,7 +250,16 @@ impl Exporter<'_> {
         let mut prev_src: Option<usize> = None;
         for g in glyphs {
             let src = story.get(g.byte..g.byte + g.len).filter(|t| !t.is_empty() && !t.chars().any(is_marker));
-            let range = if let Some(t) = src {
+            let range = if let Some(generated) = &g.generated {
+                prev_src = Some(g.byte);
+                if let Some(value) = &generated.text {
+                    let a = text.len();
+                    text.push_str(value);
+                    a..text.len()
+                } else {
+                    ranges.last().cloned().unwrap_or(text.len()..text.len())
+                }
+            } else if let Some(t) = src {
                 prev_src = Some(g.byte);
                 let a = text.len();
                 text.push_str(t);

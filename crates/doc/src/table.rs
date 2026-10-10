@@ -97,6 +97,9 @@ fn default_insets() -> [f64; 4] {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cell {
+    /// Stable within the table. Zero is accepted from legacy files and assigned on publication import.
+    #[serde(default)]
+    pub id: u64,
     #[serde(default = "one")]
     pub row_span: u32,
     #[serde(default = "one")]
@@ -134,6 +137,7 @@ pub struct Cell {
 impl Default for Cell {
     fn default() -> Self {
         Cell {
+            id: 0,
             row_span: 1,
             col_span: 1,
             text: Story::new(StoryId(0)),
@@ -156,7 +160,7 @@ impl Cell {
     }
     /// A cell with this cell's formatting and no text (new rows / columns, unmerged cells).
     pub fn blank_like(&self) -> Cell {
-        let mut c = Cell { row_span: 1, col_span: 1, ..self.clone() };
+        let mut c = Cell { id: 0, row_span: 1, col_span: 1, ..self.clone() };
         let para = self.text.paras.first().cloned().map(|p| ParaFormat { table: None, ..p }).unwrap_or_default();
         let fmt = self.text.chars.first().map(|r| r.format.clone()).unwrap_or_default();
         c.text = Story::new(StoryId(0));
@@ -249,6 +253,9 @@ impl Default for TableOptions {
 #[serde(rename_all = "camelCase")]
 pub struct Table {
     pub id: u64,
+    /// Allocation high-water mark; deleted cells never donate their identities to new cells.
+    #[serde(default)]
+    pub next_cell_id: u64,
     pub rows: Vec<Row>,
     pub columns: Vec<Column>,
     /// Row-major, `rows.len() * columns.len()`.
@@ -294,9 +301,10 @@ impl Table {
         let n = rows.len() * cols;
         Table {
             id,
+            next_cell_id: n as u64,
             rows,
             columns: vec![Column { width: w }; cols],
-            cells: vec![Cell::default(); n],
+            cells: (0..n).map(|i| Cell { id: i as u64 + 1, ..Default::default() }).collect(),
             options: TableOptions::default(),
             style: String::new(),
         }

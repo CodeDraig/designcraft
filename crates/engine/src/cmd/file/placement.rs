@@ -1,7 +1,5 @@
 //! Asset loading and placement cursor lifecycle.
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::EngineError;
 use super::{
     Affine, Arc, Asset, AssetId, Content, Graphic, Item, ItemId, Rect, Result, Selection, Session, Shape, Value, bad, base64_decode, json, ok,
     place_layout_page, shapes, str_param,
@@ -9,10 +7,22 @@ use super::{
 
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, name, link) = if let Some(b) = str_param(p, "base64") {
-        (base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None)
+        {
+            let name = str_param(p, "name").unwrap_or("image").to_string();
+            let bytes = if name.to_ascii_lowercase().ends_with(".tei") || name.to_ascii_lowercase().ends_with(".xml") {
+                super::super::tei::decoded(b, designcraft_textimport::tei::MAX_BYTES)?
+            } else {
+                base64_decode(b)
+            };
+            (bytes, name, None)
+        }
     } else if let Some(path) = str_param(p, "path") {
         #[cfg(not(target_arch = "wasm32"))]
-        let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let b = if path.to_ascii_lowercase().ends_with(".tei") || path.to_ascii_lowercase().ends_with(".xml") {
+            super::super::tei::read_path(path, designcraft_textimport::tei::MAX_BYTES)?
+        } else {
+            std::fs::read(path).map_err(|e| crate::EngineError::Other(e.to_string()))?
+        };
         #[cfg(target_arch = "wasm32")]
         let b: Vec<u8> = vec![];
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
@@ -38,7 +48,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         return super::super::media::place_media(s, p, name, mime, bytes, link);
     }
     // Text files (plain, Word, RTF) flow into frames.
-    if designcraft_textimport::is_text_file(&name) {
+    if designcraft_textimport::is_text_file(&name) || designcraft_textimport::tei::is_tei(&bytes) {
         return super::super::place_text::place_text(s, p, &name, &bytes);
     }
     // Image Import Options: which page of a PDF (1-based).
@@ -138,7 +148,7 @@ pub(crate) fn read_source(p: &Value) -> Result<(Vec<u8>, String, Option<String>)
     }
     let path = str_param(p, "path").ok_or_else(|| bad("place", "missing `path` or `base64`"))?;
     #[cfg(not(target_arch = "wasm32"))]
-    let b = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let b = std::fs::read(path).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     #[cfg(target_arch = "wasm32")]
     let b: Vec<u8> = vec![];
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());

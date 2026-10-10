@@ -1,6 +1,7 @@
 //! File › Export: Adobe PDF (Print).
 
 mod books;
+mod publication;
 use books::{export_epub, export_html, export_text, has_story_target};
 mod rasterize;
 use rasterize::{flatten, rasterize_effects, rasterize_layered, rasterize_where, threaded, transparent};
@@ -14,13 +15,13 @@ use crate::{EngineError, Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.exportPdf", "Export PDF…", ["File"], None,
-        "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
+        "{path?, edition?: id (default active), scope?: publication|component (default publication for books), strict?: bool (fail on diagnostics before writing), pages?: \"1-3,5\" | [1,3] (1-based positions; default all), flatten?: high|medium|low|ppi (Transparency Flattener: spreads with transparency are rasterised), spreads?: bool, fullScreen?: bool, bookmarksPanel?: bool, pageLayout?: single|continuous|twoUp|twoUpCover|twoUpContinuous, view?: fitPage|fitWidth|actual, advanceSeconds?: number (interactive PDF), bleed?: bool (document bleed), marks?: bool | {crop?, bleed?, pageInfo?, weight?, offset?}, standard?: \"none\"|\"x4\"|\"a2b\", compressImages?: bool, tagged?: bool (structure tree: stories as paragraphs, figures with alt text), media?: bool (interactive: embed placed video and sound), title?, author?} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_pdf),
         cmd!(noundo "file.exportEpub", "Export EPUB (Reflowable)…", ["File"], None,
-        "{path?, title?, author?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with its text)} → {path, bytes} (no path: {base64, bytes})",
+        "{path?, edition?, scope?: publication|component, strict?: bool, title?, author?, identifier?, language?: \"en\", cover?: bool (the first page as the cover image), fixedLayout?: bool (pre-paginated: each page as an image with searchable rich text and clickable links)} → {path, bytes, pages, warnings} (no path: {base64, …})",
         has_doc, export_epub),
         cmd!(noundo "file.exportFixedEpub", "Export EPUB (Fixed Layout)…", ["File"], None,
-        "{path?, title?, author?, language?} — pre-paginated EPUB → {path, bytes} (no path: {base64, bytes})",
+        "{path?, edition?, scope?: publication|component, strict?: bool, title?, author?, identifier?, language?} — pre-paginated EPUB with searchable rich text and clickable page links → {path, bytes, pages, warnings} (no path: {base64, bytes})",
         has_doc, |s, p| {
             export_epub(s, &super::with_param(p, "fixedLayout", serde_json::json!(true)))
         }),
@@ -28,7 +29,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "{path?, type?: saddleStitch|twoUpConsecutive, spaceBetween? (pt)} — printer spreads as PDF (pages imposed in booklet order) → {path, bytes, sheets} (no path: {base64, …})",
         has_doc, print_booklet),
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
-        "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes} (no path: {text, bytes})",
+        "{path?, edition?, scope?: publication|component, strict?: bool, title?, language?} — one self-contained page with semantic text, rich notes, tables, images and references → {path, bytes, warnings} (no path: {text, bytes})",
         has_doc, export_html),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
@@ -119,8 +120,10 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 }
 
 fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
-    let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
+    let prepared = publication::prepare(s, p)?;
+    let supplied = publication::defaults(p, &prepared.metadata);
+    let p = &supplied;
+    let opts = options(p, prepared.documents.iter().map(designcraft_doc::Document::page_count).sum())?;
     // Transparency Flattener presets: High / Medium / Low Resolution, or a ppi.
     let ppi = match p.get("flatten") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
@@ -132,22 +135,39 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
             v.as_f64().filter(|v| (36.0..=1200.0).contains(v)).ok_or_else(|| bad("file.exportPdf", "`flatten`: high|medium|low or 36–1200 ppi"))?,
         ),
     };
-    let flattened = ppi.map(|ppi| flatten(&st.doc, &s.cache, ppi));
-    // Placed PDFs with hidden layers go out as images showing just their visible layers.
-    let base: &designcraft_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
-    let (layered, layer_count) = rasterize_layered(base);
-    let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
-    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
-    let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
-    let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
-    let mut r = r;
-    // Transparency Blend Space: the page group of pages with transparency.
-    let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
-    let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();
-    if blended.iter().any(|b| *b) {
-        match designcraft_pdf::add_blend_space(&r.bytes, &blended, doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk) {
-            Some(b) => r.bytes = b,
-            None => r.warnings.push("the transparency blend space couldn't be set".into()),
+    let mut documents = Vec::new();
+    let mut fx_count = 0;
+    let mut layer_count = 0;
+    let mut flatten_count = 0;
+    for source in &prepared.documents {
+        let flattened = ppi.map(|ppi| flatten(source, &s.cache, ppi));
+        if let Some((_, n)) = &flattened {
+            flatten_count += n;
+        }
+        let base = flattened.as_ref().map_or(source, |f| &f.0);
+        let (layered, n) = rasterize_layered(base);
+        layer_count += n;
+        let base = layered.as_ref().unwrap_or(base);
+        let (effects, n) = rasterize_effects(base, &s.cache);
+        fx_count += n;
+        documents.push(effects.as_ref().unwrap_or(base).clone());
+    }
+    let mut r = designcraft_pdf::export_documents_with_report(&documents, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    r.warnings.extend(prepared.warnings);
+    let spreads = publication::selected_spreads(&documents, &opts);
+    for cmyk in [false, true] {
+        let blended: Vec<_> = spreads
+            .iter()
+            .map(|(part, si)| {
+                documents[*part].settings.blend_space == if cmyk { designcraft_doc::BlendSpace::Cmyk } else { designcraft_doc::BlendSpace::Rgb }
+                    && documents[*part].spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))
+            })
+            .collect();
+        if blended.iter().any(|b| *b) {
+            match designcraft_pdf::add_blend_space(&r.bytes, &blended, cmyk) {
+                Some(bytes) => r.bytes = bytes,
+                None => r.warnings.push("the transparency blend space couldn't be set".into()),
+            }
         }
     }
     // Interactive PDF view options.
@@ -186,7 +206,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Flip pages every N seconds (presentation).
     if let Some(secs) = p.get("advanceSeconds").and_then(Value::as_f64).filter(|s| *s > 0.0) {
-        let n = designcraft_pdf::sheet_spreads(doc, &opts).len();
+        let n = spreads.len();
         let dur: Vec<Option<String>> = (0..n).map(|_| Some(format!("/Dur {secs:.2}"))).collect();
         match designcraft_pdf::add_page_entries(&r.bytes, &dur) {
             Some(b) => r.bytes = b,
@@ -195,7 +215,7 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Page transitions (each spread's first page holds them).
     let trans: Vec<Option<designcraft_doc::PageTransition>> =
-        spreads.into_iter().map(|si| doc.spreads.get(si).and_then(|sp| sp.pages.first()).and_then(|pg| pg.transition)).collect();
+        spreads.into_iter().map(|(part, si)| documents[part].spreads.get(si).and_then(|sp| sp.pages.first()).and_then(|pg| pg.transition)).collect();
     if trans.iter().any(Option::is_some) {
         match designcraft_pdf::add_transitions(&r.bytes, &trans) {
             Some(b) => r.bytes = b,
@@ -208,10 +228,13 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     if layer_count > 0 {
         r.warnings.push(format!("{layer_count} placed PDF(s) with hidden layers exported as images"));
     }
-    if let Some((_, n)) = &flattened
-        && *n > 0
-    {
-        r.warnings.push(format!("transparency flattened: {n} region(s) rasterised"));
+    if flatten_count > 0 {
+        r.warnings.push(format!("transparency flattened: {flatten_count} region(s) rasterised"));
+    }
+    r.warnings.sort();
+    r.warnings.dedup();
+    if p["strict"] == true && !r.warnings.is_empty() {
+        return Err(bad("file.exportPdf", r.warnings.join("; ")));
     }
     match str_param(p, "path") {
         Some(path) => {

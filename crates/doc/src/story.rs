@@ -87,9 +87,10 @@ pub struct CharRun {
 #[serde(rename_all = "camelCase")]
 pub struct Story {
     pub id: StoryId,
-    pub text: String,
-    pub paras: Vec<ParaFormat>,
-    pub chars: Vec<CharRun>,
+    /// Canonical rich content, independent of the frames in an edition. Flattening preserves
+    /// the version 1/2 story representation for standalone documents and interchange.
+    #[serde(flatten)]
+    pub content: Arc<StoryContent>,
     /// Text frames in thread order.
     pub frames: Vec<ItemId>,
     /// Column progression, independent of paragraph bidi direction and frame threading.
@@ -102,8 +103,21 @@ pub struct Story {
     /// Bumped on every edit (composition cache key).
     #[serde(default)]
     pub rev: u64,
+    /// Place and Link: the parent story this one copies, and the parent's revision when copied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<(StoryId, u64)>,
+}
+
+/// Rich text shared by publication editions. Frame order and writing orientation live on the
+/// edition's [`Story`] projection. Nested text (notes and table cells) has no frame bindings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryContent {
+    pub text: String,
+    pub paras: Vec<ParaFormat>,
+    pub chars: Vec<CharRun>,
     /// Tables anchored in the story, by id (see [`crate::table`]).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "read_tables")]
     pub tables: BTreeMap<u64, Arc<Table>>,
     /// Footnotes, one per [`crate::notes::FOOTNOTE_REF`] in text order (see [`crate::notes`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -126,22 +140,14 @@ pub struct Story {
     /// Editorial notes, one per [`crate::endnotes::NOTE_MARK`] in text order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub editorial: Vec<Arc<crate::endnotes::EditorialNote>>,
-    /// Place and Link: the parent story this one copies, and the parent's revision when copied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<(StoryId, u64)>,
 }
 
-impl Story {
-    pub fn new(id: StoryId) -> Self {
-        Story {
-            id,
+impl Default for StoryContent {
+    fn default() -> Self {
+        Self {
             text: String::new(),
             paras: vec![ParaFormat::default()],
             chars: vec![CharRun { len: 0, format: CharFormat::default() }],
-            frames: vec![],
-            direction: crate::TextDirection::LeftToRight,
-            vertical: false,
-            rev: 0,
             tables: BTreeMap::new(),
             notes: Vec::new(),
             endnotes: Vec::new(),
@@ -150,6 +156,42 @@ impl Story {
             index_refs: Vec::new(),
             objects: Vec::new(),
             editorial: Vec::new(),
+        }
+    }
+}
+
+// Serde's flattened-content deserializer retains JSON object keys as strings rather than
+// applying serde_json's integer-key adapter. Accept that representation for legacy table ids.
+fn read_tables<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<u64, Arc<Table>>, D::Error> {
+    BTreeMap::<String, Arc<Table>>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(id, table)| id.parse().map(|id| (id, table)).map_err(serde::de::Error::custom))
+        .collect()
+}
+
+impl std::ops::Deref for Story {
+    type Target = StoryContent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+
+impl std::ops::DerefMut for Story {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.content)
+    }
+}
+
+impl Story {
+    pub fn new(id: StoryId) -> Self {
+        Story {
+            id,
+            content: Arc::new(StoryContent::default()),
+            frames: vec![],
+            direction: crate::TextDirection::LeftToRight,
+            vertical: false,
+            rev: 0,
             link: None,
         }
     }
@@ -279,12 +321,14 @@ impl Story {
         let refs = self.text[a..b].matches(crate::notes::FOOTNOTE_REF).count();
         if refs > 0 {
             let k = self.notes_before(a);
-            self.notes.drain(k..(k + refs).min(self.notes.len()));
+            let end = (k + refs).min(self.notes.len());
+            self.notes.drain(k..end);
         }
         let erefs = self.text[a..b].matches(crate::endnotes::ENDNOTE_REF).count();
         if erefs > 0 {
             let k = self.endnotes_before(a);
-            self.endnotes.drain(k..(k + erefs).min(self.endnotes.len()));
+            let end = (k + erefs).min(self.endnotes.len());
+            self.endnotes.drain(k..end);
         }
         self.marks_deleted(a, b);
         let pi = self.para_at(a);
@@ -515,6 +559,36 @@ mod tests {
         s.format_chars(0..12, |f| f.over.size = Some(20.0));
         assert_eq!(s.chars.len(), 1);
         s.check().unwrap();
+    }
+
+    #[test]
+    fn layouts_share_content_and_edits_preserve_snapshots() {
+        let original = st("shared\ntext");
+        let mut edition = original.clone();
+        edition.frames.push(ItemId(123));
+        edition.vertical = true;
+        assert!(Arc::ptr_eq(&original.content, &edition.content));
+        assert!(original.frames.is_empty());
+        edition.insert(6, " rich");
+        assert_eq!(original.text, "shared\ntext");
+        assert_eq!(edition.text, "shared rich\ntext");
+        assert!(!Arc::ptr_eq(&original.content, &edition.content));
+        original.check().unwrap();
+        edition.check().unwrap();
+    }
+
+    #[test]
+    fn shared_content_keeps_legacy_flat_json() {
+        let mut original = st("rich text");
+        original.insert_note(4, "note body", ParaFormat::default());
+        original.insert_endnote(0, "endnote body", ParaFormat::default());
+        original.format_chars(0..original.len(), |f| f.over.size = Some(17.0));
+        let json = serde_json::to_value(&original).unwrap();
+        assert_eq!(json["text"], original.text);
+        assert!(json.get("content").is_none());
+        let decoded: Story = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, original);
+        decoded.check().unwrap();
     }
 
     #[test]

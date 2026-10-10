@@ -21,3 +21,11 @@ id_type!(SpreadId, "sp");
 id_type!(PageId, "p");
 id_type!(LayerId, "l");
 id_type!(AssetId, "a");
+// Publication identities use a separate, archive-wide counter. Component-local legacy ids
+// remain usable by the existing editor; content ids survive tree reordering and edition changes.
+id_type!(ComponentId, "c");
+id_type!(EditionId, "e");
+id_type!(ContentId, "text");
+id_type!(ResourceId, "resource");
+id_type!(SourceId, "source");
+id_type!(SemanticId, "object");

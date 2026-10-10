@@ -36,6 +36,9 @@ pub struct CrossRef {
     pub target: u64,
     /// Name of the format in [`Document::xref_formats`].
     pub format: String,
+    /// Publication-wide typed field. Legacy target/format remain available for standalone files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<u64>,
 }
 
 /// A cross-reference format: building blocks between literal text.
@@ -198,7 +201,7 @@ impl Story {
         if n > 0 {
             let k = self.marks_before(XREF_MARK, pos);
             for i in 0..n {
-                self.xrefs.insert(k + i, Arc::new(CrossRef { target: 0, format: String::new() }));
+                self.xrefs.insert(k + i, Arc::new(CrossRef { target: 0, format: String::new(), field: None }));
             }
         }
         let n = text.matches(crate::index::INDEX_MARK).count();
@@ -213,7 +216,8 @@ impl Story {
             let k = self.marks_before(crate::endnotes::NOTE_MARK, pos);
             for i in 0..n {
                 let id = self.editorial.iter().map(|x| x.id).max().unwrap_or(0) + 1;
-                self.editorial.insert((k + i).min(self.editorial.len()), Arc::new(crate::endnotes::EditorialNote { id, ..Default::default() }));
+                let at = (k + i).min(self.editorial.len());
+                self.editorial.insert(at, Arc::new(crate::endnotes::EditorialNote { id, ..Default::default() }));
             }
         }
         let n = text.matches(crate::anchored::OBJECT_MARK).count();
@@ -242,15 +246,20 @@ impl Story {
             }
             let k = self.marks_before(mark, a);
             if mark == ANCHOR_MARK {
-                self.anchors.drain(k..(k + n).min(self.anchors.len()));
+                let end = (k + n).min(self.anchors.len());
+                self.anchors.drain(k..end);
             } else if mark == XREF_MARK {
-                self.xrefs.drain(k..(k + n).min(self.xrefs.len()));
+                let end = (k + n).min(self.xrefs.len());
+                self.xrefs.drain(k..end);
             } else if mark == crate::index::INDEX_MARK {
-                self.index_refs.drain(k..(k + n).min(self.index_refs.len()));
+                let end = (k + n).min(self.index_refs.len());
+                self.index_refs.drain(k..end);
             } else if mark == crate::endnotes::NOTE_MARK {
-                self.editorial.drain(k..(k + n).min(self.editorial.len()));
+                let end = (k + n).min(self.editorial.len());
+                self.editorial.drain(k..end);
             } else {
-                self.objects.drain(k..(k + n).min(self.objects.len()));
+                let end = (k + n).min(self.objects.len());
+                self.objects.drain(k..end);
             }
         }
     }
@@ -268,7 +277,7 @@ impl Story {
         let n = self.text.matches(XREF_MARK).count();
         self.xrefs.truncate(n);
         while self.xrefs.len() < n {
-            self.xrefs.push(Arc::new(CrossRef { target: 0, format: String::new() }));
+            self.xrefs.push(Arc::new(CrossRef { target: 0, format: String::new(), field: None }));
         }
         let n = self.text.matches(crate::index::INDEX_MARK).count();
         self.index_refs.truncate(n);
@@ -320,11 +329,37 @@ impl Document {
         if let Some(p) = self.story(home).and_then(|s| s.anchor_pos(id)) {
             return Some((home, p));
         }
-        self.stories.values().find_map(|s| s.anchor_pos(id).map(|p| (s.id, p)))
+        self.stories.values().find_map(|s| {
+            fn position(s: &Story, id: u64) -> Option<usize> {
+                if let Some(p) = s.anchor_pos(id) {
+                    return Some(p);
+                }
+                for (tid, table) in &s.tables {
+                    if table.cells.iter().any(|c| position(&c.text, id).is_some()) {
+                        return s.table_anchor(*tid);
+                    }
+                }
+                for (mark, note) in s.text.match_indices(crate::FOOTNOTE_REF).zip(&s.notes) {
+                    if position(&note.text, id).is_some() {
+                        return Some(mark.0);
+                    }
+                }
+                None
+            }
+            position(s, id).map(|p| (s.id, p))
+        })
     }
 
     pub fn anchor(&self, id: u64) -> Option<&TextAnchor> {
-        self.stories.values().find_map(|s| s.anchors.iter().find(|a| a.id == id).map(|a| &**a))
+        fn find(s: &Story, id: u64) -> Option<&TextAnchor> {
+            s.anchors
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| &**a)
+                .or_else(|| s.tables.values().flat_map(|t| &t.cells).find_map(|c| find(&c.text, id)))
+                .or_else(|| s.notes.iter().find_map(|n| find(&n.text, id)))
+        }
+        self.stories.values().find_map(|s| find(s, id))
     }
 
     /// The anchor at the start of paragraph containing `pos` in `sid`, creating one if needed
@@ -402,7 +437,7 @@ mod tests {
         let mut s = Story::with_text(StoryId(3), "Heading\nBody text.", Default::default());
         let a = s.insert_anchor(0, "Heading");
         assert_eq!(a >> 24, 3);
-        s.insert_xref(13, CrossRef { target: a, format: "Page Number".into() });
+        s.insert_xref(13, CrossRef { target: a, format: "Page Number".into(), field: None });
         s.check().unwrap();
         assert_eq!(s.anchor_pos(a), Some(0));
         s.insert(0, "New ");

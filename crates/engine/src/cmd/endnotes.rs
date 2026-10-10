@@ -47,11 +47,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "endnote.list", "Endnotes", [], None, "{} → [{story, id, number, text}] in numbering order", has_doc, |s, _| {
             let d = &s.doc()?.doc;
             let mut out = Vec::new();
-            for st in d.stories.values().filter(|st| !st.endnotes.is_empty()) {
-                let first = d.endnote_start(st.id);
-                for (k, n) in st.endnotes.iter().enumerate() {
-                    out.push(json!({"story": st.id.0, "id": n.id, "number": first + k as u32, "text": n.text.text}));
-                }
+            for (k,(sid,_,n)) in d.ordered_endnotes().iter().enumerate() {
+                let number = d.endnote_options.start_at.saturating_add(k as u32);
+                out.push(json!({"story":sid.0,"id":n.id,"number":number,"text":n.text.text}));
             }
             out.sort_by_key(|v| v["number"].as_u64());
             Ok(Value::Array(out))

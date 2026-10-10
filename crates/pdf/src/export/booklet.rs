@@ -52,7 +52,7 @@ pub fn export_booklet(doc: &Document, cache: &Cache, opts: &BookletOptions) -> R
     }
     pdf.set_metadata(meta);
     let mut ex = Exporter {
-        doc,
+        doc: super::DocumentContext::Borrowed(doc),
         cache,
         opts: &pdf_opts,
         clip: Rect::ZERO,

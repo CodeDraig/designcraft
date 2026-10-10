@@ -6,6 +6,10 @@ use serde_json::{Value, json};
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
 
+pub(crate) fn tracking(doc: &designcraft_doc::Document) -> bool {
+    doc.publication.as_ref().map_or(doc.settings.track_changes, |v| v.root.review.tracking)
+}
+
 /// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
 /// the text after the range now starts.
 pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
@@ -25,9 +29,27 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
         end -= x.len();
     }
     if end > r.start {
-        st.format_chars(r.start..end, |f| f.over.change = Some(ChangeMark::Deleted));
+        st.format_chars(r.start..end, |f| {
+            if f.over.change != Some(ChangeMark::Deleted) {
+                f.over.change = Some(ChangeMark::Deleted);
+                f.over.change_id = None;
+            }
+        });
     }
     end
+}
+
+pub(crate) fn replace(st: &mut Story, range: std::ops::Range<usize>, text: &str, tracking: bool) -> usize {
+    if !tracking {
+        st.replace(range.clone(), text);
+        return range.start.saturating_add(text.len());
+    }
+    let at = mark_deleted(st, range);
+    let mut format = st.char_format_at(at).clone();
+    format.over.change = Some(ChangeMark::Inserted);
+    format.over.change_id = None;
+    st.insert_with(at, text, format);
+    at.saturating_add(text.len())
 }
 
 /// Ranges of `mark` in `st`, last first.
@@ -49,6 +71,7 @@ fn resolve(st: &mut Story, accept: bool) -> usize {
     st.format_chars(0..len, |f| {
         if f.over.change.is_some() {
             f.over.change = None;
+            f.over.change_id = None;
         }
     });
     n
@@ -56,6 +79,9 @@ fn resolve(st: &mut Story, accept: bool) -> usize {
 
 /// Accept or reject the one change at `start` in story `story`.
 fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
+    if s.doc()?.doc.publication.is_some() {
+        return super::publication::review::resolve_one(s, p, accept);
+    }
     let id = if accept { "changes.accept" } else { "changes.reject" };
     let sid = p.get("story").and_then(Value::as_u64).map(StoryId).ok_or_else(|| super::bad(id, "`story` required"))?;
     let start = p.get("start").and_then(Value::as_u64).ok_or_else(|| super::bad(id, "`start` required"))? as usize;
@@ -70,7 +96,10 @@ fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
         if (mark == ChangeMark::Deleted) == accept {
             st.delete(r.clone());
         } else {
-            st.format_chars(r.clone(), |f| f.over.change = None);
+            st.format_chars(r.clone(), |f| {
+                f.over.change = None;
+                f.over.change_id = None;
+            });
         }
         if let Some(t) = &mut sel.text
             && t.story == sid
@@ -85,16 +114,28 @@ fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("changes.track", "Track Changes", ["Type", "Track Changes"], None, "{on?: bool (default: toggle)}", has_doc, |s, p| {
-            let cur = s.doc()?.doc.settings.track_changes;
-            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!cur);
-            s.edit(|d, _| {
-                d.settings.track_changes = on;
-                Ok(json!({"on": on}))
-            })
-        }),
+        cmd!(
+            "changes.track",
+            "Track Changes",
+            ["Type", "Track Changes"],
+            None,
+            "{on?: bool (default: toggle), author?:string} — publication-wide when a publication is open",
+            has_doc,
+            |s, p| {
+                if s.doc()?.doc.publication.is_some() {
+                    return super::publication::review::configure(s, p);
+                }
+                let cur = tracking(&s.doc()?.doc);
+                let on = p.get("on").and_then(Value::as_bool).unwrap_or(!cur);
+                s.edit(|d, _| {
+                    d.settings.track_changes = on;
+                    Ok(json!({"on": on}))
+                })
+            }
+        ),
         cmd!(query "changes.list", "Changes", [], None, "{} → [{story, start, end, kind: inserted|deleted, text}]", has_doc, |s, _| {
             let d = &s.doc()?.doc;
+            if let Some(v) = &d.publication { return Ok(json!(v.root.change_ranges()?)); }
             let mut out = Vec::new();
             for st in d.stories.values() {
                 for (r, f) in st.runs() {
@@ -132,6 +173,9 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 fn all(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
+    if s.doc()?.doc.publication.is_some() {
+        return super::publication::review::resolve_all(s, p, accept);
+    }
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     s.edit(|d, sel| {
         let ids: Vec<StoryId> = d.stories.keys().copied().filter(|id| only.is_none_or(|o| o == *id)).collect();

@@ -254,7 +254,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         let n = st.len();
         st.delete(n - 1..n);
     }
-    Ok(Imported { story: st, para_styles: vec![], char_styles: vec![], warnings })
+    Ok(Imported { tei: None, story: st, para_styles: vec![], char_styles: vec![], warnings })
 }
 
 /// Windows-1252 byte → char.

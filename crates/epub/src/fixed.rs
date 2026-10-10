@@ -12,6 +12,15 @@ pub struct FixedPage {
     pub width: f64,
     pub height: f64,
     pub text: String,
+    pub links: Vec<FixedLink>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FixedLink {
+    /// Page-local point coordinates, matching the page image's CSS size.
+    pub rect: [f64; 4],
+    pub href: String,
+    pub label: String,
 }
 
 /// A pre-paginated (fixed-layout) EPUB: one XHTML page per document page.
@@ -19,7 +28,7 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
     let io = |e: std::io::Error| EpubError(e.to_string());
     let zerr = |e: zip::result::ZipError| EpubError(e.to_string());
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let lang = &opts.language;
+    let lang = esc(&opts.language);
     let id = opts.identifier.clone().unwrap_or_else(|| format!("urn:designcraft:{}", slug(&title)));
     let mut manifest = String::from("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
     let mut spine = String::new();
@@ -28,8 +37,26 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
     for (i, p) in pages.iter().enumerate() {
         let n = i + 1;
         let (w, h) = (p.width.round().max(1.0) as u32, p.height.round().max(1.0) as u32);
+        let mut links = String::new();
+        for link in &p.links {
+            let [x0, y0, x1, y1] = link.rect;
+            if !link.rect.iter().all(|v| v.is_finite()) || x1 <= x0 || y1 <= y0 {
+                return Err(EpubError("invalid fixed-layout link rectangle".into()));
+            }
+            if super::executable_link(&link.href) {
+                return Err(EpubError("executable external links cannot be exported to EPUB".into()));
+            }
+            let _ = write!(
+                links,
+                "<a class=\"link\" style=\"left:{x0}px;top:{y0}px;width:{}px;height:{}px\" href=\"{}\" aria-label=\"{}\"></a>",
+                x1 - x0,
+                y1 - y0,
+                esc(&link.href),
+                esc(&link.label)
+            );
+        }
         let xhtml = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"{lang}\" lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width={w}, height={h}\"/><title>{} — {n}</title>\n<style>body{{margin:0;width:{w}px;height:{h}px;position:relative}} img{{position:absolute;left:0;top:0;width:{w}px;height:{h}px}} .t{{position:absolute;left:0;top:0;width:{w}px;color:transparent;font-size:1px;overflow:hidden}}</style></head>\n<body><img src=\"pages/p{n}.png\" alt=\"\"/><div class=\"t\">{}</div></body>\n</html>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"{lang}\" lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width={w}, height={h}\"/><title>{} — {n}</title>\n<style>body{{margin:0;width:{w}px;height:{h}px;position:relative}} img{{position:absolute;left:0;top:0;width:{w}px;height:{h}px}} .t{{position:absolute;left:0;top:0;width:{w}px;color:transparent;font-size:1px;overflow:hidden}} .link{{position:absolute;display:block;z-index:1}} .link:focus{{outline:2px solid currentColor}}</style></head>\n<body><img src=\"pages/p{n}.png\" alt=\"\"/><div class=\"t\">{}</div>{links}</body>\n</html>\n",
             esc(&title),
             esc(&p.text).replace('\n', "<br/>")
         );
@@ -45,7 +72,7 @@ pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions
     }
     let (vw, vh) = pages.first().map_or((612, 792), |p| (p.width.round() as u32, p.height.round() as u32));
     let nav = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title></head>\n<body><nav epub:type=\"page-list\" id=\"toc\"><h1>Pages</h1><ol>{nav_items}</ol></nav></body>\n</html>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title></head>\n<body><nav epub:type=\"toc page-list\" id=\"toc\"><h1>Pages</h1><ol>{nav_items}</ol></nav></body>\n</html>\n",
         esc(&title)
     );
     let author = opts.author.as_deref().map(|a| format!("<dc:creator>{}</dc:creator>", esc(a))).unwrap_or_default();

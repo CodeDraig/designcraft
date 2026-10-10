@@ -15,21 +15,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Page Reference…",
             ["Layout", "Index"],
             None,
-            "{topics?: [level 1..4] | topic?: \"Level 1 > Level 2\" (default: the selected text), sort?: [keys], range?: currentPage|toEndOfStory|suppressPageRange|nextParagraphs|see|seeAlso, paragraphs?: n, target?: topic for see/seeAlso} — a marker at the insertion point",
+            "{index?: publication index name, topics?: [level 1..4] | topic?: \"Level 1 > Level 2\" (default: the selected text), sort?: [keys], range?: currentPage|toEndOfStory|suppressPageRange|nextParagraphs|see|seeAlso, paragraphs?: n, target?: topic for see/seeAlso} — a marker at the insertion point",
             in_story_text,
             add_reference
         ),
-        cmd!(query "index.list", "Index Page References", [], None, "{} → [{story, pos, topics, range, page}]", has_doc, list),
+        cmd!(query "index.list", "Index Page References", [], None, "{index?} → standalone markers or named publication occurrences", has_doc, list),
         cmd!(
             "index.generate",
             "Generate Index…",
             ["Layout", "Index"],
             None,
-            "{title?: \"Index\", sectionHeadings?: true, runIn?: false, page?: 1-based page for a new frame, rect?: [x0,y0,x1,y1]} — replaces the existing index → {story, entries}",
+            "{index?, title?: \"Index\", sectionHeadings?: true, runIn?: false, page?: 1-based page for a new frame, rect?: [x0,y0,x1,y1]} — replaces the existing index → {story, entries}",
             has_doc,
             generate
         ),
         cmd!("index.update", "Update Index", ["Layout", "Index"], None, "{} — regenerate the existing index", has_index, |s, _| {
+            if s.doc()?.doc.publication.is_some() {
+                let cache = s.cache.clone();
+                return s.edit(|d, _| super::publication::update::refresh(d, true, &cache));
+            }
             let spec = s.doc()?.doc.index.clone().ok_or_else(|| bad("index.update", "no index"))?;
             fill_index(s, spec, None)
         }),
@@ -38,6 +42,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn in_story_text(s: &Session) -> std::result::Result<(), String> {
     super::has_text(s)?;
+    if s.active().is_some_and(|s| s.doc.publication.is_some()) {
+        return Ok(());
+    }
     match s.active().and_then(|d| d.selection.text) {
         Some(t) if t.cell.is_some() => Err("index markers go in story text".into()),
         _ => Ok(()),
@@ -45,6 +52,9 @@ fn in_story_text(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn has_index(s: &Session) -> std::result::Result<(), String> {
+    if s.active().and_then(|s| s.doc.publication.as_ref()).is_some_and(|v| v.root.indexes.values().any(|i| i.destination.is_some())) {
+        return Ok(());
+    }
     match s.doc() {
         Ok(st) if st.doc.index.as_ref().is_some_and(|t| st.doc.story(t.story).is_some()) => Ok(()),
         _ => Err("the document has no index".into()),
@@ -52,6 +62,9 @@ fn has_index(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn add_reference(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.doc()?.doc.publication.is_some() {
+        return super::publication::indexes::legacy::add(s, p);
+    }
     let st = s.doc()?;
     let t = st.selection.text.ok_or_else(|| bad("index.addReference", "no insertion point"))?;
     let selected = st.doc.story(t.story).map(|x| designcraft_doc::xref::clean(x.slice(t.range()))).unwrap_or_default();
@@ -119,7 +132,10 @@ fn resolve(s: &Session, d: &Document, skip: Option<StoryId>) -> Vec<(StoryId, us
     out
 }
 
-fn list(s: &mut Session, _: &Value) -> Result<Value> {
+fn list(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.doc()?.doc.publication.is_some() {
+        return super::publication::indexes::legacy::list(s, p);
+    }
     let d = s.doc()?.doc.clone();
     let rs = resolve(s, &d, None);
     Ok(Value::Array(
@@ -195,6 +211,9 @@ fn fill_index(s: &mut Session, spec: IndexSpec, new_frame: Option<(usize, Option
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
+    if s.doc()?.doc.publication.is_some() {
+        return super::publication::indexes::legacy::generate(s, p);
+    }
     let mut spec = s.doc()?.doc.index.clone().unwrap_or_default();
     if let Some(t) = str_param(p, "title") {
         spec.title = t.into();

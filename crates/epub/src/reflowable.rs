@@ -1,23 +1,33 @@
 //! Reflowable EPUB content, navigation, and package assembly.
 
-use super::{Document, EpubError, EpubOptions, body_html, esc, slug, stylesheet};
+use super::{Document, EpubError, EpubOptions, EpubReport, esc, slug};
 use std::fmt::Write as _;
 use std::io::Write as _;
 
 /// Export the document as a reflowable EPUB 3.
 pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
+    export_epub_with_report(doc, opts).map(|r| r.bytes)
+}
+
+pub fn export_epub_with_report(doc: &Document, opts: &EpubOptions) -> Result<EpubReport, EpubError> {
+    export_epub_documents(&super::semantic::documents(doc)?, opts)
+}
+
+pub fn export_epub_documents(docs: &[Document], opts: &EpubOptions) -> Result<EpubReport, EpubError> {
+    let doc = docs.first().ok_or_else(|| EpubError("no content to export".into()))?;
     let io = |e: std::io::Error| EpubError(e.to_string());
     let zerr = |e: zip::result::ZipError| EpubError(e.to_string());
-    let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
+    let title = opts.title.clone().unwrap_or_else(|| doc.publication.as_ref().map_or(&doc.title, |v| &v.root.title).clone());
     let id = opts.identifier.clone().unwrap_or_else(|| format!("urn:designcraft:{}", slug(&title)));
-    let (body, images, toc) = body_html(doc, &|name, _, _| name.to_string());
-    let lang = &opts.language;
+    let rendered = super::semantic::build(docs, false)?;
+    let (body, images, toc) = (&rendered.text, &rendered.assets, &rendered.toc);
+    let lang = esc(&opts.language);
     let chapter = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{lang}\" lang=\"{lang}\">\n<head><meta charset=\"utf-8\"/><title>{}</title><link rel=\"stylesheet\" type=\"text/css\" href=\"style.css\"/></head>\n<body>\n{body}</body>\n</html>\n",
         esc(&title)
     );
     let mut nav_items = String::new();
-    for (a, label) in &toc {
+    for (a, label) in toc {
         let _ = write!(nav_items, "<li><a href=\"content.xhtml#{a}\">{}</a></li>", esc(label));
     }
     if nav_items.is_empty() {
@@ -30,7 +40,8 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
     let mut manifest = String::from(
         "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n<item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>\n<item id=\"content\" href=\"content.xhtml\" media-type=\"application/xhtml+xml\"/>\n",
     );
-    for (k, (name, (mime, _))) in images.iter().enumerate() {
+    for (k, (name, asset)) in images.iter().enumerate() {
+        let mime = &asset.mime;
         let _ = writeln!(manifest, "<item id=\"img{k}\" href=\"{name}\" media-type=\"{mime}\"/>");
     }
     // Cover: an image page first in reading order.
@@ -56,13 +67,14 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
             ("META-INF/container.xml", container.as_bytes()),
             ("OEBPS/content.opf", opf.as_bytes()),
             ("OEBPS/nav.xhtml", nav.as_bytes()),
-            ("OEBPS/style.css", stylesheet(doc).as_bytes()),
+            ("OEBPS/style.css", rendered.css.as_bytes()),
             ("OEBPS/content.xhtml", chapter.as_bytes()),
         ] {
             z.start_file(name, deflate).map_err(zerr)?;
             z.write_all(data).map_err(io)?;
         }
-        for (name, (_, data)) in &images {
+        for (name, asset) in images {
+            let data = &asset.data;
             z.start_file(format!("OEBPS/{name}"), stored).map_err(zerr)?;
             z.write_all(data).map_err(io)?;
         }
@@ -79,5 +91,5 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
         }
         z.finish().map_err(zerr)?;
     }
-    Ok(buf.into_inner())
+    Ok(EpubReport { bytes: buf.into_inner(), warnings: rendered.warnings })
 }

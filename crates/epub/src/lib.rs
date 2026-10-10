@@ -8,19 +8,28 @@
 #![forbid(unsafe_code)]
 
 mod fixed;
-pub use fixed::{FixedPage, export_fixed_epub};
+pub use fixed::{FixedLink, FixedPage, export_fixed_epub};
 mod css;
 use css::{char_classes, override_css, para_classes};
 pub use css::{slug, stylesheet};
 mod content;
-use content::body_html;
 pub use content::story_html;
 mod reading_order;
+mod semantic;
 pub use reading_order::{Block, reading_order};
 mod html;
-pub use html::{HtmlOptions, export_html};
+pub use html::{HtmlOptions, export_html, export_html_documents, export_html_with_report};
 mod reflowable;
-pub use reflowable::export_epub;
+pub use reflowable::{export_epub, export_epub_documents, export_epub_with_report};
+
+pub struct HtmlReport {
+    pub text: String,
+    pub warnings: Vec<String>,
+}
+pub struct EpubReport {
+    pub bytes: Vec<u8>,
+    pub warnings: Vec<String>,
+}
 
 use std::collections::BTreeMap;
 
@@ -62,12 +71,16 @@ fn esc(s: &str) -> String {
             '>' => o.push_str("&gt;"),
             '"' => o.push_str("&quot;"),
             '\u{E000}'..='\u{E1FF}' => {}
-            '\u{2028}' => o.push_str("<br/>"),
             '\u{AD}' => o.push_str("&#173;"),
             c => o.push(c),
         }
     }
     o
+}
+
+pub fn executable_link(href: &str) -> bool {
+    let compact: String = href.chars().filter(|c| !c.is_control() && !c.is_whitespace()).collect();
+    compact.split_once(':').is_some_and(|(scheme, _)| matches!(scheme.to_ascii_lowercase().as_str(), "javascript" | "vbscript" | "data"))
 }
 
 #[cfg(test)]

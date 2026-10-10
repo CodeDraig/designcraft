@@ -52,15 +52,16 @@ fn map_styles(d: &Document, imp: &mut designcraft_textimport::Imported, map: &st
             s.based_on = Some(b.clone());
         }
     }
-    let n = imp.story.len();
-    imp.story.format_paras(0..n, |p| {
-        if let Some(m) = rename.get(&p.style) {
-            p.style = m.clone();
+    imp.story.for_each_encoding_mut(&mut |story| {
+        for p in &mut story.paras {
+            if let Some(m) = rename.get(&p.style) {
+                p.style = m.clone();
+            }
         }
-    });
-    imp.story.format_chars(0..n, |f| {
-        if let Some(m) = rename.get(&f.style) {
-            f.style = m.clone();
+        for r in &mut story.chars {
+            if let Some(m) = rename.get(&r.format.style) {
+                r.format.style = m.clone();
+            }
         }
     });
 }
@@ -114,10 +115,43 @@ fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize) {
 
 /// Thread new frames on new pages (margin rectangles) until the story fits. Returns pages added.
 pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Result<usize> {
+    autoflow_with_cache(d, sid, max_pages, &designcraft_compose::Cache::new())
+}
+pub(crate) fn autoflow_with_cache(d: &mut Document, sid: StoryId, max_pages: usize, cache: &designcraft_compose::Cache) -> Result<usize> {
     let mut added = 0;
+    let mut previous = None;
+    let mut new_frames = std::collections::BTreeSet::new();
     loop {
-        let (overset, shown) = fit(d, sid);
-        let Some(at) = overset else { return Ok(added) };
+        let composed = cache.get(d, sid, None);
+        if !composed.diagnostics.is_empty() {
+            return Err(bad("file.place", composed.diagnostics.join("; ")));
+        }
+        let pending = composed.overset_at.or_else(|| (!composed.annotation_overflow.is_empty()).then(|| d.story(sid).map_or(0, |s| s.len())));
+        let Some(at) = pending else {
+            // Batch estimates can overrun the text, especially after a short first frame or
+            // full-page illustration. Only remove empty trailing pages created in this call.
+            let unused: Vec<_> = composed
+                .frames
+                .iter()
+                .rev()
+                .take_while(|f| f.lines.is_empty() && f.tables.is_empty() && f.notes.is_empty() && f.objects.is_empty() && f.decos.is_empty())
+                .filter(|f| new_frames.contains(&f.frame))
+                .filter_map(|f| d.page_of_item(f.frame))
+                .collect();
+            if !unused.is_empty() {
+                d.delete_pages(&unused)?;
+            }
+            return Ok(added - unused.len());
+        };
+        let shown = composed.frames.iter().map(|f| f.range.end).max().unwrap_or(0);
+        let progress = (
+            shown.saturating_add(composed.annotation_progress),
+            composed.frames.iter().map(|f| f.lines.iter().map(|l| l.glyphs.len()).sum::<usize>()).sum::<usize>(),
+        );
+        if previous == Some(progress) {
+            return Err(bad("file.place", format!("content at byte {at} cannot fit the available text area")));
+        }
+        previous = Some(progress);
         if added >= max_pages {
             return Err(bad("file.place", format!("autoflow stopped after {max_pages} pages")));
         }
@@ -125,7 +159,7 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Resu
         let frames = d.story(sid).map_or(1, |s| s.frames.len()).max(1);
         // Frames still needed at the rate the existing ones are filled (at least one).
         let per_frame = (shown.max(at) / frames).max(1);
-        let want = (len - at).div_ceil(per_frame).clamp(1, max_pages - added);
+        let want = len.saturating_sub(at).div_ceil(per_frame).clamp(1, (max_pages - added).min(64));
         let last = *d.story(sid).and_then(|s| s.frames.last()).ok_or_else(|| bad("file.place", "the story has no frame"))?;
         let mut page = d.page_of_item(last).unwrap_or(d.page_count().saturating_sub(1));
         let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
@@ -137,7 +171,12 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Resu
             let (si, pi) = d.page_loc(page).ok_or_else(|| bad("file.place", "page insert failed"))?;
             let r = d.spreads[si].pages[pi].margin_rect();
             let (fid, _) = d.add_text_frame(SpreadRef::Doc(si), r, layer, "", ParaFormat::default())?;
-            d.thread(prev, fid)?;
+            new_frames.insert(fid);
+            if d.endnote_story == Some(sid) {
+                d.extend_endnote_frame(fid)?;
+            } else {
+                d.thread(prev, fid)?;
+            }
             prev = fid;
         }
         added += want;
@@ -145,10 +184,19 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Resu
 }
 
 pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
-    let mut imp = designcraft_textimport::import(name, bytes).map_err(|e| bad("file.place", e.to_string()))?;
+    let imp =
+        if designcraft_textimport::tei::is_tei(bytes) || name.to_ascii_lowercase().ends_with(".tei") || name.to_ascii_lowercase().ends_with(".xml") {
+            super::tei::import(name, bytes, p)?
+        } else {
+            designcraft_textimport::import(name, bytes).map_err(|e| bad("file.place", e.to_string()))?
+        };
+    place_imported(s, p, imp)
+}
+
+pub(super) fn place_imported(s: &mut Session, p: &Value, mut imp: designcraft_textimport::Imported) -> Result<Value> {
     let remove = p.get("removeStyles").and_then(Value::as_bool).unwrap_or(false);
     if remove {
-        strip(&mut imp.story);
+        imp.story.for_each_encoding_mut(&mut strip);
         imp.para_styles.clear();
         imp.char_styles.clear();
     }
@@ -172,15 +220,19 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
     });
     let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1));
     let rect = super::rect_param(p, "rect");
-    let warnings = imp.warnings.clone();
     s.edit(|d, sel| {
+        let mut import_params = p.clone();
+        if let Some(target) = frame.or_else(|| caret.and_then(|t| t.frame.or_else(|| d.story(t.story).and_then(|s| s.frames.first().copied())))) {
+            import_params["frame"] = json!(target.0);
+        }
+        super::tei::prepare(d, &mut imp, &import_params)?;
         add_styles(d, &imp, conflict);
         let sid = if let Some(t) = caret {
             // Into the text at the insertion point (replacing the selection).
             let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             story.delete(r.clone());
-            let end = story.insert_story(r.start, &imp.story);
+            let end = story.insert_story_preserving_anchors(r.start, &imp.story);
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             t.story
         } else {
@@ -212,22 +264,61 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
             let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             let n = story.len();
             story.delete(0..n);
-            story.insert_story(0, &imp.story);
+            story.insert_story_preserving_anchors(0, &imp.story);
             if let Some(first) = imp.story.paras.first() {
                 story.paras[0] = ParaFormat { table: story.paras[0].table, ..first.clone() };
             }
             *sel = designcraft_doc::Selection::items(vec![fid]);
             sid
         };
-        let pages = if autoflow_on { autoflow(d, sid, 2000)? } else { 0 };
-        let overset = fit(d, sid).0.is_some();
-        Ok(json!({"story": sid.0, "pagesAdded": pages, "overset": overset, "warnings": warnings}))
+        let source = super::tei::attach(d, &imp);
+        let mut pages = if autoflow_on { autoflow(d, sid, 2000)? } else { 0 };
+        if source.is_some() {
+            pages += super::tei::endnotes(d, autoflow_on)?;
+        }
+        d.check()?;
+        let overset = fit(d, sid).0.is_some() || d.endnote_story.is_some_and(|sid| fit(d, sid).0.is_some());
+        let warnings = &imp.warnings;
+        Ok(json!({"story": sid.0, "pagesAdded": pages, "overset": overset, "warnings": warnings, "source": source}))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autoflow_keeps_only_used_new_pages_and_preserves_existing_pages() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let old_pages: Vec<_> = before.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect();
+        let text = "A short first frame must not inflate the remaining page count. ".repeat(200);
+        let r = s
+            .execute(
+                "file.place",
+                &json!({
+                    "name": "book.txt", "base64": super::super::file::base64_encode(text.as_bytes()),
+                    "page": 1, "rect": [36, 36, 540, 90], "autoflow": true
+                }),
+            )
+            .unwrap();
+        assert_eq!(r["overset"], false);
+        let d = s.doc().unwrap().doc.clone();
+        d.check().unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let composed = designcraft_compose::compose_story(&d, sid, &Default::default());
+        assert!(composed.frames.len() > 1);
+        assert!(composed.frames.last().is_some_and(|f| !f.lines.is_empty()), "autoflow left empty frames after the text");
+        assert_eq!(d.page_count(), 3 + composed.frames.len() - 1);
+        assert_eq!(r["pagesAdded"].as_u64().unwrap() as usize, d.page_count() - 3);
+        assert!(old_pages.iter().all(|id| d.spreads.iter().any(|sp| sp.pages.iter().any(|p| p.id == *id))));
+        assert_eq!(d.story(sid).unwrap().text, text);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, d);
+    }
 
     #[test]
     fn place_text_file_with_autoflow() {

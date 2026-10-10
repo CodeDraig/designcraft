@@ -11,7 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod output;
-pub use output::{ComposedStory, Deco, FrameText, Line, PlacedGlyph, PlacedNote, PlacedObject, Rule, RunStyle, upright_in_vertical};
+pub use output::{ComposedStory, Deco, FrameText, GeneratedGlyph, Line, PlacedGlyph, PlacedNote, PlacedObject, Rule, RunStyle, upright_in_vertical};
 mod frames;
 pub use frames::{Exclusion, FrameSpec, frame_specs};
 mod caret;
@@ -29,9 +29,12 @@ use wrap::{estimate_slots, free_slot};
 mod decoration;
 use decoration::para_box_decos;
 
+mod annotations;
 mod bidi;
 pub mod breaker;
 mod cache;
+mod incremental;
+pub use incremental::WorkReport;
 pub mod hyphen;
 mod notes;
 mod overlay;
@@ -52,12 +55,15 @@ use designcraft_doc::{
 use designcraft_fonts::{FontDb, ScopedFonts};
 use designcraft_geom::{Point, Rect};
 
+pub use crate::annotations::{annotation_fragments, hit_annotation};
 use crate::breaker::{Break, Spacing};
-pub use crate::cache::Cache;
+pub use crate::cache::{Cache, Metrics, WorkEvent};
+mod equivalent;
 use crate::notes::Notes;
 pub use crate::notes::{find_note, hit_note, note_caret};
 use crate::shape::{Glyph, StyleTable, SubstCtx};
 pub use crate::table::{PlacedCell, StrokeSeg, TableFrag, cell_caret, find_cell, hit_cell};
+pub use equivalent::equivalent;
 
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
@@ -72,10 +78,16 @@ pub struct ComposeOptions {
     pub label: Option<String>,
     /// Anchor pages for cross-references (needed when the story contains cross-references).
     pub xrefs: Option<Arc<xref::XrefIndex>>,
+    /// Internal note-area composition does not recursively lay out the same stream.
+    pub suppress_annotations: bool,
+    pub note_releases: Option<Arc<std::collections::BTreeMap<usize, usize>>>,
 }
 
 /// Compose a story of `doc` through its frames.
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
+    if !doc.publication_story_included(sid) {
+        return ComposedStory { story: sid, ..Default::default() };
+    }
     let specs = frame_specs(doc, sid);
     match doc.story(sid) {
         Some(st) => compose(doc, st, &specs, opts),
@@ -87,10 +99,25 @@ const DEFAULT_TAB: f64 = 36.0;
 
 /// Compose `story` into `frames`.
 pub fn compose(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions) -> ComposedStory {
-    compose_with_db(doc, story, frames, opts, FontDb::global())
+    if !opts.suppress_annotations && doc.publication.as_ref().is_some_and(|v| !v.root.note_streams.is_empty()) {
+        annotations::compose(doc, story, frames, opts)
+    } else {
+        compose_with_db(doc, story, frames, opts, FontDb::global())
+    }
 }
 
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
+    compose_traced(doc, story, frames, opts, db, None)
+}
+
+fn compose_traced(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    opts: &ComposeOptions,
+    db: &FontDb,
+    mut work: Option<&mut incremental::Work>,
+) -> ComposedStory {
     let db = &db.scoped(doc.font_scope);
     let mut out = ComposedStory { story: story.id, rev: story.rev, text_len: story.text.len(), ..Default::default() };
     let mut styles_tab: Vec<RunStyle> = Vec::new();
@@ -112,6 +139,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         .collect();
     let mut cur = Cursor { fi: 0, col: 0, last_baseline: None, last_descent: 0.0, last_reference: 0.0, pending: 0.0 };
     let para_ranges = story.para_ranges();
+    let endnote_numbers = if story.endnotes.is_empty() { Vec::new() } else { doc.endnote_numbers(story.id) };
+    let endnote_offsets: Vec<_> = story.text.match_indices(designcraft_doc::ENDNOTE_REF).map(|(pos, _)| pos).collect();
     let np = para_ranges.len();
     let hyph_exceptions = doc.hyphenation_exception_map();
     let mut list_counter: u32 = 0;
@@ -144,7 +173,17 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut notes = Notes::new(doc, story);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<Option<usize>, std::sync::Arc<Vec<String>>> = Default::default();
+    if let Some(w) = work.as_deref() {
+        pi = w.resume(&mut out, &mut cur, &mut list_counter, &mut styles_tab, &mut snaps, &mut info, &mut force_col, &mut line_cap, &mut note_snaps);
+    }
     'paras: while pi < np {
+        if let Some(w) = work.as_deref_mut() {
+            if w.reuse_tail(&styles_tab, &mut out, &mut cur, &mut list_counter, pi, &mut snaps, &mut info, &mut force_col, &mut line_cap) {
+                pi = np;
+                break;
+            }
+            w.report.paragraphs += 1;
+        }
         let prange = para_ranges[pi].clone();
         let snap = Snapshot::take(&out, &cur, list_counter);
         snaps.truncate(pi);
@@ -152,6 +191,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         note_snaps.truncate(pi);
         note_snaps.push((notes.num, notes.key, notes.placed.len()));
         info.truncate(pi);
+        if let Some(frame) = opts.note_releases.as_ref().and_then(|r| r.range(..=prange.start).next_back().map(|(_, f)| *f)) {
+            while cur.fi < frame {
+                cur.next_frame();
+            }
+        }
         let pf = &story.paras[pi];
         let (pp, base_chars) = doc.styles.resolve_para(pf);
         if let Some(t) = story.para_table(pi) {
@@ -206,9 +250,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         };
         if !story.endnotes.is_empty() {
             // Endnote reference numbers continue through the document.
-            let first = doc.endnote_start(story.id) + story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32;
+            let first = endnote_offsets.partition_point(|&pos| pos < prange.start);
             for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
-                sub.notes.insert(prange.start + i, doc.endnote_options.label(first + k as u32));
+                sub.notes.insert(
+                    prange.start + i,
+                    doc.endnote_options.label(endnote_numbers.get(first + k).copied().unwrap_or(doc.endnote_options.start_at)),
+                );
             }
         }
         if !story.objects.is_empty() {
@@ -226,10 +273,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         }
         if !story.xrefs.is_empty() {
             sub.xrefs = xref::texts_in(doc, story, prange.clone(), opts.xrefs.as_deref());
+            sub.rich = xref::rich_texts_in(doc, story, prange.clone(), opts.page.or_else(|| cur_frame.and_then(|f| f.page)));
         }
         if notes.active() {
             notes.number_refs(doc, prange.clone(), cur_frame.and_then(|f| f.page), &mut sub);
         }
+        annotations::substitutions(doc, story, prange.clone(), &mut sub);
         let sub_objects = sub.objects.clone();
         let mut table = StyleTable { styles: &mut styles_tab, missing: &mut missing_fonts };
         let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
@@ -403,6 +452,21 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             for (k, b) in breaks.iter().enumerate() {
                 let (s, e) = (g0 + b.start, g0 + b.end);
                 let line_glyphs = &glyphs[s..e.max(s)];
+                let release = line_glyphs
+                    .iter()
+                    .filter_map(|g| opts.note_releases.as_ref().and_then(|r| r.range(..=g.byte).next_back().map(|(_, f)| *f)))
+                    .max()
+                    .unwrap_or(cur.fi);
+                if release > cur.fi {
+                    g0 = s;
+                    while cur.fi < release {
+                        cur.next_frame();
+                    }
+                    col_first_line = line_no;
+                    moved = true;
+                    break;
+                }
+
                 let (asc, desc, lead) = line_metrics(line_glyphs, &glyphs, s, base_leading, base_chars.size, db, &base_chars);
                 let reference = cjk_line_reference(line_glyphs);
                 let mut baseline = cur.next_baseline(f, col, lead, asc, &pp);
@@ -496,9 +560,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     layout_line(&glyphs, s, e, b.hyphen, lx0, lx1, col.x0, &pp, &spacing, last, b.forced && !last, f.left_page, &bidi_info);
                 ruby::annotate(db, &styles_tab, &mut placed, doc.settings.glyph_fallback);
                 let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
+                let range_end =
+                    placed.iter().filter(|g| g.generated.is_some()).map(|g| g.byte.saturating_add(g.len)).max().unwrap_or(range_end).max(range_end);
                 let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
                 let range_start = if line_no == 0 { prange.start } else { range_start };
                 let ft = &mut out.frames[cur.fi];
+                if let Some(w) = work.as_deref_mut() {
+                    w.frame(cur.fi);
+                }
                 if line_no == 0 {
                     first_line_rect = Some((cur.fi, baseline, asc, x0));
                 }
@@ -607,6 +676,9 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         }
         cur.pending += pp.space_after;
         pi += 1;
+    }
+    if let Some(w) = work {
+        w.finish(&out, &cur, list_counter, pi, &snaps, &info, &force_col, &line_cap, &styles_tab);
     }
     notes.finish(doc, story, frames, &cols, &mut out);
     // Ranges, content heights and vertical justification.
@@ -736,6 +808,7 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
 
 /// Lengths of the composed output and the cursor before a paragraph (keep resolution re-lays
 /// paragraphs from here). Only the cursor's frame and later ones can change afterwards.
+#[derive(Clone, Debug)]
 struct Snapshot {
     cur: Cursor,
     list_counter: u32,
@@ -875,7 +948,7 @@ fn ft_prev_end(overset: &Option<usize>, len: usize) -> usize {
     overset.unwrap_or(len)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct Cursor {
     fi: usize,
     col: usize,
@@ -980,3 +1053,6 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_generated;

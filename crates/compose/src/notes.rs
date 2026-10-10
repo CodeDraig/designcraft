@@ -42,7 +42,11 @@ pub(crate) struct Notes {
 
 impl Notes {
     pub fn new(doc: &Document, story: &Story) -> Notes {
-        let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
+        let refs: Vec<usize> = if story.notes.is_empty() || (doc.publication.is_some() && story.notes.iter().any(|n| n.annotation.is_some())) {
+            Vec::new()
+        } else {
+            story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect()
+        };
         let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
         Notes { numbers: vec![start; refs.len()], refs, num: start, key: None, placed: Vec::new(), cache: HashMap::new(), notes: story.notes.clone() }
     }
@@ -113,6 +117,7 @@ impl Notes {
             running: opts.running.clone(),
             label: Some(label),
             xrefs: opts.xrefs.clone(),
+            ..opts.clone()
         };
         let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let h = cs.frames.first().and_then(|ft| ft.lines.last()).map_or(0.0, |l| l.baseline + l.descent);
@@ -177,6 +182,9 @@ impl Notes {
                 ft.notes.push(PlacedNote {
                     id: note.id,
                     index: p.k,
+                    annotation: None,
+                    source_story: Some(Arc::new(note.text.clone())),
+                    source_range: 0..note.text.len(),
                     column: ci as u32,
                     label: o.label(self.numbers[p.k], true),
                     origin: Point::new(col.x0, y),
@@ -192,13 +200,13 @@ impl Notes {
 
 /// The placed footnote with id `id`: (frame index, footnote).
 pub fn find_note(cs: &ComposedStory, id: u64) -> Option<(usize, &PlacedNote)> {
-    cs.frames.iter().enumerate().find_map(|(fi, ft)| ft.notes.iter().find(|n| n.id == id).map(|n| (fi, n)))
+    cs.frames.iter().enumerate().find_map(|(fi, ft)| ft.notes.iter().find(|n| n.annotation.is_none() && n.id == id).map(|n| (fi, n)))
 }
 
 /// Footnote text hit at frame-inner point `p`: (footnote id, byte in the footnote's story).
 pub fn hit_note(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize)> {
     let ft = cs.frames.get(fi)?;
-    let n = ft.notes.iter().find(|n| n.rect.contains(p))?;
+    let n = ft.notes.iter().find(|n| n.annotation.is_none() && n.rect.contains(p))?;
     let local = Point::new(p.x - n.origin.x, p.y - n.origin.y);
     Some((n.id, crate::hit(&n.text, 0, local).unwrap_or(0)))
 }

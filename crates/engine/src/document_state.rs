@@ -45,6 +45,11 @@ pub struct DocState {
     pub preview_record: Option<u32>,
     /// The fonts the document brought (`doc.font_scope`), found while it is open.
     pub fonts: Option<Arc<FontScope>>,
+    /// Component fonts retained after conversion from open documents or a .dcbook collection.
+    pub publication_fonts: Vec<Arc<FontScope>>,
+    pub(crate) publication_style_preview: Option<crate::cmd::publication::styles::Preview>,
+    pub(crate) publication_manuscript_preview: Option<crate::cmd::publication::review::manuscript::Preview>,
+    pub(crate) publication_preview_id: u64,
 }
 
 /// A document's font scope ([`designcraft_fonts::FontDb::load_document_fonts`]): its fonts are
@@ -80,9 +85,16 @@ impl DocState {
             preview_stash: None,
             preview_record: None,
             fonts: None,
+            publication_fonts: Vec::new(),
+            publication_style_preview: None,
+            publication_manuscript_preview: None,
+            publication_preview_id: 0,
         }
     }
     pub fn is_dirty(&self) -> bool {
+        if let (Some(current), Some(saved)) = (&self.doc.publication, &self.saved_doc.publication) {
+            return !Arc::ptr_eq(&current.root, &saved.root);
+        }
         !Arc::ptr_eq(&self.doc, &self.saved_doc)
     }
     pub fn title(&self) -> String {
@@ -90,6 +102,6 @@ impl DocState {
             .as_deref()
             .and_then(|p| std::path::Path::new(p).file_name())
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| self.doc.title.clone())
+            .unwrap_or_else(|| self.doc.publication.as_ref().map_or_else(|| self.doc.title.clone(), |v| v.root.title.clone()))
     }
 }

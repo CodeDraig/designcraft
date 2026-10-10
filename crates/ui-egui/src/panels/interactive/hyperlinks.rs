@@ -3,14 +3,12 @@
 use super::{DesignApp, Tokens, Value, json};
 
 fn dest_text(d: &Value) -> String {
-    if let Some(u) = d.get("url").and_then(Value::as_str) {
-        return u.to_string();
-    }
-    if let Some(e) = d.get("email").and_then(Value::as_str) {
-        return format!("mailto:{e}");
-    }
-    if let Some(p) = d.get("page").and_then(Value::as_u64) {
-        return format!("Page {}", p + 1);
+    match d["kind"].as_str() {
+        Some("url") => return d["value"].as_str().unwrap_or("").into(),
+        Some("email") => return format!("mailto:{}", d["value"].as_str().unwrap_or("")),
+        Some("page") => return format!("Page {}", d["value"].as_u64().unwrap_or(0) + 1),
+        Some("anchor") => return "Text destination (follows reflow)".into(),
+        _ => {}
     }
     d.to_string()
 }
@@ -55,6 +53,14 @@ pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
             let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(&h["dest"]));
             if r.clicked() {
                 let _ = app.run("hyperlink.goToSource", json!({"id": hid}));
+            }
+            if h["dest"]["kind"] == "anchor" && ui.small_button("Destination").clicked() {
+                match app.run("tei.goTo", json!({"anchor": h["dest"]["value"]})) {
+                    Ok(v) => {
+                        let _ = app.run("view.goToPage", json!({"page":v["page"]}));
+                    }
+                    Err(e) => app.status(e),
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))).clicked() {

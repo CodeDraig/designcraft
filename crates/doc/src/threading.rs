@@ -69,7 +69,8 @@ pub(crate) fn append(dst: &mut Story, src: &Story) -> Result<usize> {
         }
         dst.chars.extend(src.chars.iter().cloned());
     }
-    for (destination, source) in [(&mut dst.notes, &src.notes), (&mut dst.endnotes, &src.endnotes)] {
+    let content = Arc::make_mut(&mut dst.content);
+    for (destination, source) in [(&mut content.notes, &src.notes), (&mut content.endnotes, &src.endnotes)] {
         let mut used = destination.iter().map(|n| n.id).collect();
         for n in source {
             let mut n = n.clone();
@@ -206,7 +207,7 @@ mod tests {
         st.insert(st.len(), &crate::endnotes::NOTE_MARK.to_string());
         Arc::make_mut(st.editorial.last_mut().unwrap()).text = format!("editorial {label}");
         let anchor = st.insert_anchor(st.len(), label);
-        st.insert_xref(st.len(), CrossRef { target: anchor, format: "Paragraph Text".into() });
+        st.insert_xref(st.len(), CrossRef { target: anchor, format: "Paragraph Text".into(), field: None });
         st.insert_index_ref(st.len(), IndexRef { topics: vec![label.into()], ..Default::default() });
         st.insert_object(st.len(), AnchoredObject::new(obj, Default::default()));
         let mut table = Table::new(1, 1, 1, 0, 0, 80.0);

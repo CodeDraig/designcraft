@@ -36,6 +36,28 @@ fn composes_simple_paragraph() {
 }
 
 #[test]
+fn zero_width_review_anchors_preserve_kerning_ligatures_joining_and_hyphenation() {
+    for text in ["AVATAR office affinity typography demonstration typography demonstration", "اللغة العربية جميلة ومتنوعة"] {
+        let (d, sid, _) = doc_with(text, Rect::new(0., 0., 95., 700.), ParaAttrs::default());
+        let before = compose_story(&d, sid, &Default::default());
+        let visible = |c: &ComposedStory| {
+            c.frames
+                .iter()
+                .flat_map(|f| &f.lines)
+                .map(|l| (l.baseline, l.glyphs.iter().filter(|g| g.visible).map(|g| (g.gid, g.x, g.y, g.adv)).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        };
+        for at in text.char_indices().map(|(i, _)| i).chain(std::iter::once(text.len())) {
+            let mut changed = d.clone();
+            changed.story_mut(sid).unwrap().insert_anchor(at, "review");
+            let after = compose_story(&changed, sid, &Default::default());
+            assert_eq!(visible(&before), visible(&after), "anchor at {at} in {text}");
+            assert_eq!(after.frames[0].range.end, changed.story(sid).unwrap().len());
+        }
+    }
+}
+
+#[test]
 fn line_ranges_partition_the_story() {
     let text = format!("{LOREM}\n\nSecond paragraph here.\n{LOREM}");
     let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 200.0, 2000.0), ParaAttrs::default());

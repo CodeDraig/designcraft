@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod services;
-pub use services::{DownloadFn, Inbox, OpenAsyncFn, PickFn, ReadFn, Services, WriteFn};
+pub use services::{DeliveredFiles, DownloadFn, Inbox, OpenAsyncFn, PickFn, ReadFn, RecoverySaveFn, Services, StatusInbox, WriteFn};
 mod state;
 pub use state::{SavedWorkspace, ScreenMode, UiState};
 mod canvas_cache;
@@ -79,6 +79,8 @@ pub struct DesignApp {
     pub synthetic: Vec<egui::Event>,
     /// Story open in the Story Editor.
     pub story_editor: Option<designcraft_doc::StoryId>,
+    pub note_editor: Option<u64>,
+    pub review_editor: Option<u64>,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<(u64, Option<String>, Sender<ControlResponse>, f64)>,
     queued_shots: Vec<(u64, f64, u32)>,
@@ -119,6 +121,8 @@ impl DesignApp {
             perf: Perf::default(),
             synthetic: vec![],
             story_editor: None,
+            note_editor: None,
+            review_editor: None,
             control_rx: None,
             pending_shots: vec![],
             queued_shots: vec![],
@@ -151,6 +155,30 @@ impl DesignApp {
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        if r.is_ok() && matches!(id, "publication.activate" | "publication.addComponent" | "publication.edition.create") {
+            self.review_editor = None;
+            canvas::go_to_page(self, 0);
+        }
+        if let Ok(value) = &r
+            && value["noteOwnerActivated"] == true
+        {
+            self.story_editor = self.session.active().and_then(|s| s.selection.text.map(|t| t.story));
+            self.note_editor = value["id"].as_u64();
+            self.review_editor = None;
+        }
+        if id == "publication.review.goTo" && r.is_ok() && self.session.active().is_some_and(|s| s.selection.text.is_some_and(|t| t.cell.is_some())) {
+            self.story_editor = self.session.active().and_then(|s| s.selection.text.map(|t| t.story));
+            self.review_editor = r.as_ref().ok().and_then(|r| r["id"].as_u64());
+            self.note_editor = None;
+        }
+        if matches!(
+            id,
+            "publication.reference.goTo" | "publication.index.goTo" | "publication.note.goTo" | "publication.review.goTo" | "publication.proof.goTo"
+        ) && let Ok(value) = &r
+            && let Some(page) = value["page"].as_u64()
+        {
+            canvas::go_to_page(self, page as usize);
+        }
         if let Err(e) = &r {
             self.status(e.clone());
         }
@@ -211,6 +239,29 @@ impl DesignApp {
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);
+        // Recovery must run while an editor is idle as well as during user input.
+        if self.services.save_recovery.is_some() || self.session.recovery_dir.is_some() {
+            let configured = self.session.prefs.recovery_minutes * 60.0;
+            let interval = if configured.is_finite() { configured.clamp(5.0, 3600.0) } else { 30.0 };
+            let remaining = (interval - (now - self.last_recovery)).clamp(0.05, interval);
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+        }
+        if let Some(inbox) = self.services.status_inbox.clone() {
+            for message in std::mem::take(&mut *inbox.lock().unwrap_or_else(|e| e.into_inner())) {
+                self.status(message);
+            }
+        }
+        if self.services.save_recovery.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
+            self.last_recovery = now;
+            match designcraft_engine::recovery::snapshots(&self.session) {
+                Ok(snapshots) => {
+                    if let Some(save) = self.services.save_recovery.as_mut() {
+                        save(snapshots);
+                    }
+                }
+                Err(e) => self.status(format!("Couldn't prepare browser recovery: {e}")),
+            }
+        }
         // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
         #[cfg(not(target_arch = "wasm32"))]
         if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
@@ -239,17 +290,7 @@ impl DesignApp {
             menus::shortcuts(self, ctx);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
-            {
-                let p = f.path().to_string_lossy().to_string();
-                if p.is_empty() {
-                    continue;
-                }
-                let lp = p.to_ascii_lowercase();
-                let cmd = if lp.ends_with(".designcraft") || lp.ends_with(".idml") { "file.open" } else { "file.place" };
-                let _ = self.run(cmd, json!({"path": p}));
-            }
-        }
+        self.receive_dropped_paths(ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_string_lossy().into_owned()).collect()));
     }
 
     /// Inject synthetic events (one pointer event per frame).

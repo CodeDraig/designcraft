@@ -11,6 +11,15 @@ pub(super) fn draw_text_selection(
     ts: designcraft_doc::TextSel,
     cells: Option<designcraft_doc::TableSel>,
 ) {
+    // Arbitrarily nested review text is opened in the editable review/story window.
+    // Its address is not a top-level table cell and must not be drawn as one.
+    if ts.cell.and_then(|c| c.review_id()).is_some() {
+        return;
+    }
+    if let Some(id) = ts.cell.and_then(|c| c.annotation_id()) {
+        draw_annotation_selection(app, painter, xf, doc, layout, ts, id);
+        return;
+    }
     let cs = app.session.cache.get(doc, ts.story, None);
     let range = ts.range();
     // Selected table cells: tint every selected cell.
@@ -108,6 +117,57 @@ pub(super) fn draw_text_selection(
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
+    }
+}
+
+fn draw_annotation_selection(
+    app: &DesignApp,
+    painter: &egui::Painter,
+    xf: &Xf,
+    doc: &Document,
+    layout: &CanvasLayout,
+    ts: designcraft_doc::TextSel,
+    id: u64,
+) {
+    let range = ts.range();
+    let mut caret_drawn = false;
+    let tokens = crate::theme::Tokens::get(painter.ctx());
+    for sid in doc.stories.keys() {
+        let cs = app.session.cache.get(doc, *sid, None);
+        for (fi, origin, text) in compose::annotation_fragments(&cs, id) {
+            let Some(ft) = cs.frames.get(fi) else { continue };
+            let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+            let m = a * doc.text_xf(it) * Affine::translate(origin.to_vec2());
+            for f in &text.frames {
+                for l in &f.lines {
+                    let start = range.start.max(l.range.start);
+                    let end = range.end.min(l.range.end);
+                    if !range.is_empty() && start < end {
+                        let x0 = compose::caret_x(l, start);
+                        let x1 = compose::caret_x(l, end);
+                        let points = [
+                            Point::new(x0, l.baseline - l.ascent),
+                            Point::new(x1, l.baseline - l.ascent),
+                            Point::new(x1, l.baseline + l.descent),
+                            Point::new(x0, l.baseline + l.descent),
+                        ]
+                        .map(|p| xf.to_screen(m * p));
+                        painter.add(egui::Shape::convex_polygon(points.to_vec(), tokens.accent.gamma_multiply(0.3), Stroke::NONE));
+                    }
+                    if ts.is_caret() && !caret_drawn && l.range.start <= ts.focus && ts.focus <= l.range.end {
+                        caret_drawn = true;
+                        if (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0 {
+                            let x = compose::caret_x(l, ts.focus);
+                            painter.line_segment(
+                                [xf.to_screen(m * Point::new(x, l.baseline - l.ascent)), xf.to_screen(m * Point::new(x, l.baseline + l.descent))],
+                                Stroke::new(1.0, tokens.text),
+                            );
+                        }
+                        painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
+                    }
+                }
+            }
+        }
     }
 }
 

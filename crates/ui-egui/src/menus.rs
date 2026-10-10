@@ -32,15 +32,15 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
-    ("app.exportEpub", "Export EPUB…", None, "{path?} — reflowable EPUB 3 (with the first page as its cover)"),
+    ("app.exportEpub", "Export EPUB…", None, "{path?, edition?, scope?, strict?, cover?} — EPUB 3; no parameters opens publication output choices"),
     (
         "app.exportInteractivePdf",
         "Export PDF (Interactive)…",
         None,
         "{path?, fullScreen?, advanceSeconds?} — single pages fitted, bookmarks panel open, buttons, forms, transitions",
     ),
-    ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?} — pre-paginated EPUB 3"),
-    ("app.exportHtml", "Export HTML…", None, "{path?} — one self-contained web page"),
+    ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?, edition?, scope?, strict?} — pre-paginated EPUB 3"),
+    ("app.exportHtml", "Export HTML…", None, "{path?, edition?, scope?, strict?} — one self-contained web page"),
     ("app.exportXml", "Export XML…", None, "{path?} — the tagged content"),
     ("app.printBooklet", "Print Booklet…", None, "{path?} — saddle-stitched printer spreads as PDF"),
     ("app.qrCode", "Generate QR Code…", None, "{} — the QR Code dialog (object.qrCode does the work)"),
@@ -63,6 +63,24 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.graphicCell", "Convert Cell to Graphic Cell…", None, "{} — pick an image for the target table cell"),
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
+    ("app.teiImport", "Import TEI Book…", None, "{path | base64 + name, purpose?: open|place} — review TEI reading and resource options"),
+    ("app.teiReport", "TEI Import Report…", None, "{} — inspect preserved sources, notices and navigation"),
+    ("app.teiSource", "Save Original TEI…", None, "{source?, path?} — retrieve the unchanged imported XML"),
+    (
+        "app.publicationDialog",
+        "Publication…",
+        None,
+        "{mode?: new|component|edition|editionSettings|export|settings|styles|numbering|mark|reference|generated|template|scan|index|indexTopic|indexMark|indexPreview|noteStream|notePolicy|noteInsert|notes|apparatus|apparatusRecover|review|comment|proof|proofCompare|manuscript|layout, stream?, index?, id?, topic?, component?, name?, source?, sourceEdition?, edition?, components?, path? | base64 + name} — publication settings, references, review, proofs, manuscript comparison and layout verification",
+    ),
+    ("app.publicationImport", "Import Publication Chapter…", None, "{} — add a standalone document to the active publication"),
+    (
+        "app.publicationManuscript",
+        "Compare Revised Manuscript…",
+        None,
+        "{} — choose a revised manuscript for explicit review before applying to the active chapter",
+    ),
+    ("app.publicationBook", "Convert Book to Publication…", None, "{} — copy .dcbook chapters into a new publication"),
+    ("app.browserRecovery", "Recover Browser Documents", None, "{} — reopen preserved browser snapshots as unsaved documents"),
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{} — Word/RTF style mapping before placing"),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
@@ -83,7 +101,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.deletePage", "Delete Page", None, "{} — deletes the page in view"),
     ("app.duplicateSpread", "Duplicate Spread", None, "{} — duplicates the spread in view (pages and items)"),
     ("app.tablePanel", "Table Panel", Some("Shift+F9"), "{}"),
-    ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),
+    ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?, note?: publication note id}"),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{}"),
     ("view.fitPage", "Fit Page in Window", Some("Cmd+0"), "{}"),
@@ -175,7 +193,11 @@ pub const MENUS: &[(&str, &[&str])] = &[
         "File",
         &[
             "ui:app.newDocumentDialog",
+            "ui:app.publicationDialog|New Publication…",
+            "cmd:publication.convert",
+            "ui:app.publicationBook",
             "ui:app.openDialog",
+            "ui:app.browserRecovery",
             "-",
             "ui:app.close",
             "ui:app.save",
@@ -185,6 +207,9 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "ui:app.placeDialog",
             "ui:app.placeWithOptions",
+            "ui:app.teiImport",
+            "ui:app.teiReport",
+            "ui:app.teiSource",
             "-",
             "ui:app.exportPdf",
             "ui:app.packageDialog",
@@ -667,6 +692,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel|Liquid Layout|{\"panel\": \"liquid\"}",
             "ui:window.panel|Tags|{\"panel\": \"tags\"}",
             "ui:window.panel|Book|{\"panel\": \"book\"}",
+            "ui:window.panel|Publication|{\"panel\": \"publication\"}",
             "<",
             ">Utilities",
             "ui:window.panel|Data Merge|{\"panel\":\"dataMerge\"}",
@@ -702,6 +728,18 @@ pub fn ui_label(id: &str) -> Option<(&'static str, Option<&'static str>)> {
 
 /// Run a UI command; `None` if `id` isn't one.
 pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if p.as_object().is_none_or(|p| p.is_empty()) && app.session.active().is_some_and(|s| s.doc.publication.is_some()) {
+        let format = match id {
+            "app.exportPdf" => Some("pdf"),
+            "app.exportEpub" => Some("epub"),
+            "app.exportFixedEpub" => Some("fixedEpub"),
+            "app.exportHtml" => Some("html"),
+            _ => None,
+        };
+        if let Some(format) = format {
+            return Some(crate::dialogs::publication::open(app, &json!({"mode":"export","format":format})));
+        }
+    }
     if id.starts_with("view.") {
         return view::run(app, id, p);
     }
@@ -735,11 +773,40 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
                 app.run("file.close", json!({"index": index}))
             }
         }
+        "app.teiImport" => {
+            if p.get("path").is_some() || p.get("base64").is_some() {
+                crate::dialogs::tei::open(app, p.clone(), p["purpose"].as_str().unwrap_or("open"))
+            } else {
+                app.pick_and_open("tei")
+            }
+        }
+        "app.teiReport" => match app.run("tei.report", p.clone()) {
+            Ok(reports) => {
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("teiReport", json!({"reports":reports})));
+                Ok(Value::Null)
+            }
+            Err(e) => Err(e),
+        },
+        "app.teiSource" => crate::dialogs::tei::save_source(app, p),
+        "app.publicationDialog" => crate::dialogs::publication::open(app, p),
+        "app.publicationImport" => app.pick_and_open("publicationAdd"),
+        "app.publicationManuscript" => app.pick_and_open("manuscript"),
+        "app.publicationBook" => app.pick_and_open("publicationBook"),
+        "app.browserRecovery" => {
+            if app.services.save_recovery.is_some() {
+                app.pick_and_open("browserRecovery")
+            } else {
+                Err("browser recovery is available in the browser app".into())
+            }
+        }
         "app.placeDialog" => app.pick_and_open("place"),
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
             let l = path.to_lowercase();
+            if l.ends_with(".tei") || l.ends_with(".xml") {
+                return Some(crate::dialogs::tei::open(app, json!({"path":path}), "place"));
+            }
             if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
                 return Some(app.run("file.place", json!({"path": path})));
             }
@@ -761,14 +828,22 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => {
-            let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
+            let name = app
+                .session
+                .active()
+                .map(|d| format!("{}.designcraft", d.doc.publication.as_ref().map_or(d.doc.title.as_str(), |v| &v.root.title)))
+                .unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
                 return Some(app.run("file.saveAs", json!({"path": path})));
             }
             Ok(Value::Null)
         }
         "app.saveCopyDialog" => {
-            let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
+            let name = app
+                .session
+                .active()
+                .map(|d| format!("{} copy.designcraft", d.doc.publication.as_ref().map_or(d.doc.title.as_str(), |v| &v.root.title)))
+                .unwrap_or_default();
             if let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) {
                 if app.services.download.is_some() {
                     return Some(download_copy(app, &path));
@@ -781,7 +856,9 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
         "app.exportIdml" => export_idml(app, p),
         "app.exportEpub" => {
             let mut q = if p.is_object() { p.clone() } else { json!({}) };
-            q["cover"] = json!(true);
+            if let Some(q) = q.as_object_mut() {
+                q.entry("cover").or_insert(json!(true));
+            }
             export_bytes(app, &q, "epub", "file.exportEpub")
         }
         "app.exportInteractivePdf" => {
@@ -901,12 +978,25 @@ pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, 
             }
         }
         "app.storyEditor" => {
+            app.review_editor = None;
+            if let Some(note) = p["note"].as_u64() {
+                if let Err(error) = app.run("publication.note.select", json!({"id":note})) {
+                    return Some(Err(error));
+                }
+                app.note_editor = Some(note);
+                app.story_editor = app.session.active().and_then(|s| s.selection.text.map(|t| t.story));
+                return Some(Ok(Value::Null));
+            }
             let sid = p.get("story").and_then(Value::as_u64).map(designcraft_doc::StoryId).or_else(|| {
                 let st = app.session.active()?;
                 st.selection.text.map(|t| t.story).or_else(|| st.selection.items.iter().find_map(|i| st.doc.item(*i)?.text_frame().map(|t| t.story)))
             });
             match sid {
                 Some(s) => {
+                    app.note_editor = app
+                        .session
+                        .active()
+                        .and_then(|st| st.selection.text.filter(|t| t.story == s).and_then(|t| t.cell).and_then(|c| c.annotation_id()));
                     app.story_editor = if app.story_editor == Some(s) { None } else { Some(s) };
                     Ok(Value::Null)
                 }

@@ -32,6 +32,10 @@ pub struct Footnote {
     pub id: u64,
     /// The footnote text (no frames).
     pub text: Story,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<crate::publication::annotations::Identity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apparatus: Option<crate::publication::annotations::Apparatus>,
 }
 
 /// Restart Numbering Every.
@@ -155,7 +159,7 @@ impl Story {
 
     /// Mutable footnote (copy-on-write); bumps the story revision.
     pub fn note_mut(&mut self, id: u64) -> Option<&mut Footnote> {
-        let n = self.notes.iter_mut().find(|n| n.id == id)?;
+        let n = Arc::make_mut(&mut self.content).notes.iter_mut().find(|n| n.id == id)?;
         self.rev += 1;
         Some(Arc::make_mut(n))
     }
@@ -187,7 +191,8 @@ impl Story {
             let id = self.next_note_id();
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
-            self.notes.insert((k + i).min(self.notes.len()), Arc::new(Footnote { id, text }));
+            let at = (k + i).min(self.notes.len());
+            self.notes.insert(at, Arc::new(Footnote { id, text, annotation: None, apparatus: None }));
         }
     }
 
@@ -213,6 +218,9 @@ impl Story {
                 return Err(format!("story {}: footnote id {} used twice", self.id.0, note.id));
             }
             note.text.check()?;
+            if let Some(apparatus) = &note.apparatus {
+                apparatus.check()?;
+            }
         }
         Ok(())
     }

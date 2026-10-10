@@ -6,6 +6,20 @@ impl crate::Document {
     /// The story text edits go to: a cell's story when `cell` is set, else the story itself.
     pub fn text_story(&self, story: StoryId, cell: Option<crate::CellAddr>) -> Option<&Story> {
         let st = self.story(story)?;
+        if let Some(id) = cell.and_then(|c| c.review_id()) {
+            let v = self.publication.as_ref()?;
+            let (component, sid, path, _, _) = v.root.review_address(id).ok()??;
+            if component != v.component || sid != story {
+                return None;
+            }
+            return crate::publication::annotations::at_path(st, &path);
+        }
+        if let Some(id) = cell.and_then(|c| c.annotation_id()) {
+            let v = self.publication.as_ref()?;
+            let e = v.root.annotation_entries().ok()?.into_iter().find(|e| e.component == v.component && e.story == story && e.identity.id == id)?;
+            let owner = crate::publication::annotations::at_path(st, &e.path)?;
+            return if e.endnote { owner.endnote(e.note.id) } else { owner.note(e.note.id) }.map(|n| &n.text);
+        }
         match cell {
             Some(c) if c.table == crate::FOOTNOTE_TABLE => st.note(c.row as u64).map(|n| &n.text),
             Some(c) => st.tables.get(&c.table)?.cell(c.row, c.col).map(|x| &x.text),
@@ -15,6 +29,21 @@ impl crate::Document {
 
     /// Mutable [`crate::Document::text_story`] (a cell edit bumps the containing story's revision).
     pub fn text_story_mut(&mut self, story: StoryId, cell: Option<crate::CellAddr>) -> Option<&mut Story> {
+        if let Some(id) = cell.and_then(|c| c.review_id()) {
+            let v = self.publication.as_ref()?;
+            let (component, sid, path, _, _) = v.root.review_address(id).ok()??;
+            if component != v.component || sid != story {
+                return None;
+            }
+            return crate::publication::annotations::at_path_mut(self.story_mut(story)?, &path);
+        }
+        if let Some(id) = cell.and_then(|c| c.annotation_id()) {
+            let v = self.publication.as_ref()?;
+            let e = v.root.annotation_entries().ok()?.into_iter().find(|e| e.component == v.component && e.story == story && e.identity.id == id)?;
+            let st = self.story_mut(story)?;
+            let owner = crate::publication::annotations::at_path_mut(st, &e.path)?;
+            return if e.endnote { owner.endnote_mut(e.note.id) } else { owner.note_mut(e.note.id) }.map(|n| &mut n.text);
+        }
         let st = self.story_mut(story)?;
         match cell {
             Some(c) if c.table == crate::FOOTNOTE_TABLE => st.note_mut(c.row as u64).map(|n| &mut n.text),
@@ -25,6 +54,21 @@ impl crate::Document {
 }
 
 impl Story {
+    /// Import and preservation transformations must include alternate TEI readings too.
+    pub fn for_each_encoding_mut(&mut self, f: &mut impl FnMut(&mut Story)) {
+        self.for_each_text_mut(&mut |s| {
+            f(s);
+            let content = Arc::make_mut(&mut s.content);
+            for n in content.notes.iter_mut().chain(content.endnotes.iter_mut()) {
+                if let Some(a) = &mut Arc::make_mut(n).apparatus {
+                    for r in &mut a.readings {
+                        r.text.for_each_encoding_mut(f);
+                    }
+                }
+            }
+        });
+    }
+
     /// Visit this story and every text inside it (table cells, footnotes), mutably.
     pub fn for_each_text_mut(&mut self, f: &mut impl FnMut(&mut Story)) {
         f(self);
@@ -34,6 +78,9 @@ impl Story {
             }
         }
         for n in &mut self.notes {
+            std::sync::Arc::make_mut(n).text.for_each_text_mut(f);
+        }
+        for n in &mut self.endnotes {
             std::sync::Arc::make_mut(n).text.for_each_text_mut(f);
         }
     }
@@ -58,7 +105,7 @@ impl Story {
 
     /// Mutable table (copy-on-write); bumps the story revision.
     pub fn table_mut(&mut self, id: u64) -> Option<&mut Table> {
-        let t = self.tables.get_mut(&id)?;
+        let t = Arc::make_mut(&mut self.content).tables.get_mut(&id)?;
         self.rev += 1;
         Some(Arc::make_mut(t))
     }
@@ -97,14 +144,15 @@ impl Story {
         }
         let ranges = self.para_ranges();
         let mut used = std::collections::HashSet::new();
-        for (p, r) in self.paras.iter_mut().zip(ranges) {
+        let content = Arc::make_mut(&mut self.content);
+        for (p, r) in content.paras.iter_mut().zip(ranges) {
             if let Some(id) = p.table
-                && (!self.text[r].contains(TABLE_ANCHOR) || !self.tables.contains_key(&id) || !used.insert(id))
+                && (!content.text[r].contains(TABLE_ANCHOR) || !content.tables.contains_key(&id) || !used.insert(id))
             {
                 p.table = None;
             }
         }
-        self.tables.retain(|id, _| used.contains(id));
+        content.tables.retain(|id, _| used.contains(id));
     }
 
     /// Check table invariants (part of [`Story::check`]).

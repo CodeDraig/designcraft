@@ -14,20 +14,26 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         app.story_editor = None;
         return;
     };
-    let Some(story) = st.doc.story(sid).cloned() else {
+    let cell = app.review_editor.map(designcraft_doc::CellAddr::review).or_else(|| app.note_editor.map(designcraft_doc::CellAddr::annotation));
+    let Some(story) = st.doc.text_story(sid, cell).cloned() else {
         app.story_editor = None;
         return;
     };
     let t = Tokens::get(ctx);
     let cs = app.session.cache.get(&st.doc, sid, None);
-    let overset = cs.overset_at;
+    let overset = if cell.is_some() { None } else { cs.overset_at };
     let mut open = true;
     let mut edit: Option<(usize, usize, String)> = None;
-    egui::Window::new(format!("Story Editor — {} words", story.text.split_whitespace().count()))
+    egui::Window::new(format!("{} — {} words", if cell.is_some() { "Note Editor" } else { "Story Editor" }, story.text.split_whitespace().count()))
         .id(egui::Id::new("story_editor"))
         .open(&mut open)
         .default_size(vec2(560.0, 520.0))
         .show(ctx, |ui| {
+            if app.review_editor.is_some()
+                && let Some(t) = st.selection.text.filter(|t| t.story == sid && t.cell == cell)
+            {
+                ui.label(format!("Selected passage: {}", designcraft_doc::xref::clean(story.text.get(t.range()).unwrap_or_default())));
+            }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_top(|ui| {
                     // Style column.
@@ -83,9 +89,19 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             });
         });
     if let Some((a, b, text)) = edit {
-        let _ = app.run("story.replaceRange", json!({"story": sid.0, "start": a, "end": b, "text": text}));
+        if let Some(id) = app.review_editor {
+            let _ = app.run("publication.review.replace", json!({"id":id,"start":a,"end":b,"text":text}));
+        } else if let Some(id) = app.note_editor {
+            let mut edited = story.text.clone();
+            edited.replace_range(a..b, &text);
+            let _ = app.run("publication.note.edit", json!({"id":id,"text":edited}));
+        } else {
+            let _ = app.run("story.replaceRange", json!({"story": sid.0, "start": a, "end": b, "text": text}));
+        }
     }
     if !open {
         app.story_editor = None;
+        app.note_editor = None;
+        app.review_editor = None;
     }
 }

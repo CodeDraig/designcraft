@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bool_or, cmd, has_doc, has_selection, ids_param, ok};
 use crate::{HistoryEntry, Result, Session};
 
+mod anchors;
+
 fn can_undo(s: &Session) -> std::result::Result<(), String> {
     s.active().filter(|d| !d.history.undo.is_empty()).map(|_| ()).ok_or_else(|| "nothing to undo".into())
 }
@@ -35,8 +37,19 @@ fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
 }
 
 /// Plain text of a story slice: markers and anchored objects dropped, footnote text omitted.
-fn plain(st: &designcraft_doc::Story) -> String {
-    st.text.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).map(|c| if c == '\u{2028}' { '\n' } else { c }).collect()
+fn plain(doc: &designcraft_doc::Document, st: &designcraft_doc::Story) -> String {
+    let mut refs = st.xrefs.iter();
+    let mut text = String::new();
+    for c in st.text.chars() {
+        if c == designcraft_doc::XREF_MARK {
+            if let Some(x) = refs.next() {
+                text.push_str(&designcraft_compose::xref::xref_text(doc, x, None));
+            }
+        } else if !('\u{E000}'..='\u{E1FF}').contains(&c) {
+            text.push(if c == '\u{2028}' { '\n' } else { c });
+        }
+    }
+    text
 }
 
 /// Copy the selected text with its formatting. Returns its plain text (for the system clipboard).
@@ -45,7 +58,9 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(t) = st.selection.text.filter(|t| !t.is_caret()) else { return Ok(None) };
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
-    let text = plain(&slice);
+    let text = plain(&st.doc, &slice);
+    s.text_clipboard_origin = Some(st.uid);
+    s.text_clipboard_cut = None;
     s.text_clipboard = Some((Arc::new(slice), text.clone()));
     Ok(Some(text))
 }
@@ -76,13 +91,25 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, cross-references and tables only paste into story text, not cells or footnotes.
     if use_clip && let Some((slice, _)) = clip {
+        if !designcraft_doc::publication::references::field_ids(&slice.content).is_empty() && s.text_clipboard_origin != Some(s.doc()?.uid) {
+            return Err(super::bad(
+                "edit.paste",
+                "publication fields belong to their original book; paste without formatting to use their visible text",
+            ));
+        }
         let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        let moved = (s.text_clipboard_origin == Some(s.doc()?.uid)).then_some(s.text_clipboard_cut).flatten();
         return s.edit(|d, sel| {
+            let mut slice = slice.clone();
+            let anchors = anchors::prepare(d, &mut slice)?;
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
             st.delete(r.clone());
-            let end = st.insert_story(r.start, &slice);
+            let end = st.insert_story_preserving_anchors(r.start, &slice);
+            if let Some(from) = moved {
+                anchors::transfer(d, from, t.story, &anchors)?;
+            }
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });
@@ -93,7 +120,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
 
 fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
     let mut out = st.clone();
-    let marks = [designcraft_doc::FOOTNOTE_REF, designcraft_doc::XREF_MARK, designcraft_doc::TABLE_ANCHOR];
+    let marks = [designcraft_doc::FOOTNOTE_REF, designcraft_doc::TABLE_ANCHOR];
     while let Some(i) = out.text.find(marks) {
         let n = out.text[i..].chars().next().map_or(1, char::len_utf8);
         out.delete(i..i + n);
@@ -202,15 +229,19 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Ok(json!({"text": text}));
             }
             s.clipboard = Some(Arc::new(clip_doc(s)?));
+            s.clipboard_origin=Some(s.doc()?.uid);
             s.text_clipboard = None;
             ok()
         }),
         cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_selection_or_text, |s, p| {
             if let Some(text) = copy_text(s)? {
+                let origin = s.doc()?.doc.publication.as_ref().map(|v| v.component);
                 super::text::delete_selection(s)?;
+                s.text_clipboard_cut = origin;
                 return Ok(json!({"text": text}));
             }
             s.clipboard = Some(Arc::new(clip_doc(s)?));
+            s.clipboard_origin = Some(s.doc()?.uid);
             s.execute("edit.clear", p)
         }),
         cmd!(
@@ -236,6 +267,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let Some(clip) = s.clipboard.clone() else {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
                 };
+                check_clip_fields(s, &clip)?;
                 let off = if bool_or(p, "inPlace", false) { 0.0 } else { 12.0 };
                 let ids: Vec<ItemId> = clip.spreads.first().map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
                 s.edit(|d, sel| {
@@ -265,6 +297,8 @@ pub fn specs() -> Vec<CommandSpec> {
 pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     let st = s.doc()?;
     let mut d = (*st.doc).clone();
+    // A clipping owns only the copied selection, never the source publication's other chapters.
+    d.publication = None;
     let keep: Vec<ItemId> = st.selection.items.clone();
     // Gather the selected items (keep their spread coordinates) into spread 0.
     let mut items = Vec::new();
@@ -380,6 +414,7 @@ mod text_clipboard_tests {
 fn paste_into(s: &mut Session, p: &Value) -> Result<Value> {
     use super::object::RemoveKeep;
     let clip = s.clipboard.clone().ok_or_else(|| super::bad("edit.pasteInto", "the clipboard holds no objects"))?;
+    check_clip_fields(s, &clip)?;
     let target = match super::id_param(p, "id") {
         Some(id) => id,
         None => {
@@ -454,4 +489,13 @@ mod paste_into_tests {
         assert!(img.pixel(120, 120)[0] > 200, "{:?}", img.pixel(120, 120));
         s.doc().unwrap().doc.check().unwrap();
     }
+}
+
+fn check_clip_fields(s: &Session, clip: &designcraft_doc::Document) -> Result<()> {
+    if s.clipboard_origin != Some(s.doc()?.uid)
+        && clip.stories.values().any(|st| !designcraft_doc::publication::references::field_ids(&st.content).is_empty())
+    {
+        return Err(super::bad("edit.paste", "objects with publication fields must stay in their original book"));
+    }
+    Ok(())
 }

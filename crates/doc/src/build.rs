@@ -145,6 +145,7 @@ impl Document {
                 include_prefix: false,
             }],
             assets: BTreeMap::new(),
+            tei_sources: vec![],
             hyperlinks: vec![],
             data_merge: DataMerge::default(),
             bookmarks: vec![],
@@ -159,6 +160,7 @@ impl Document {
             modified: 0,
             next_id: 0,
             font_scope: 0,
+            publication: None,
         };
         let lid = LayerId(d.alloc());
         d.layers.push(Layer {

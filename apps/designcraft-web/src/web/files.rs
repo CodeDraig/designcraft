@@ -1,28 +1,53 @@
 //! Browser file picker and download lifetimes.
 
 use super::{DOC_EXTS, IMAGE_EXTS};
-use designcraft_ui_egui::{Inbox, Services};
+use designcraft_ui_egui::{DeliveredFiles, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
 pub(super) fn services(inbox: Inbox, ctx: egui::Context) -> Services {
     let open_inbox = inbox.clone();
+    let status = designcraft_ui_egui::StatusInbox::default();
+    let open_status = status.clone();
+    let prefix = format!("{}-{:x}/", js_sys::Date::now(), js_sys::Math::random().to_bits());
+    let save_recovery = super::recovery::writer(prefix.clone(), status.clone(), ctx.clone());
     Services {
         open_async: Some(Box::new(move |purpose: &str| {
             let inbox = open_inbox.clone();
             let ctx = ctx.clone();
+            if purpose == "browserRecovery" {
+                super::recovery::recover(prefix.clone(), inbox, open_status.clone(), ctx);
+                return;
+            }
+            let purpose = purpose.to_string();
             let dialog = if purpose == "swatches" {
                 rfd::AsyncFileDialog::new().add_filter("Swatch Exchange (ASE)", &["ase"])
-            } else if purpose == "place" {
+            } else if purpose == "publicationBook" {
+                rfd::AsyncFileDialog::new().add_filter("Book and chapters", &["dcbook", "designcraft", "idml", "tei", "xml"])
+            } else if purpose.starts_with("manuscript:") {
+                rfd::AsyncFileDialog::new().add_filter("Revised manuscript", &["tei", "xml", "docx", "rtf", "txt", "md"])
+            } else if purpose == "place" || purpose.starts_with("teiResource:") {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {
                 rfd::AsyncFileDialog::new().add_filter("DesignCraft", DOC_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
+                if purpose == "publicationBook" {
+                    let Some(files) = dialog.pick_files().await else {
+                        return;
+                    };
+                    let mut delivered = Vec::new();
+                    for file in files {
+                        delivered.push((file.file_name(), file.read().await));
+                    }
+                    inbox.lock().unwrap_or_else(|e| e.into_inner()).push(DeliveredFiles { purpose, files: delivered });
+                    ctx.request_repaint();
+                    return;
+                }
                 let Some(file) = dialog.pick_file().await else {
                     return;
                 };
                 let bytes = file.read().await;
-                inbox.lock().unwrap_or_else(|e| e.into_inner()).push((file.file_name(), bytes));
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).push(DeliveredFiles { purpose, files: vec![(file.file_name(), bytes)] });
                 ctx.request_repaint();
             });
         })),
@@ -35,6 +60,8 @@ pub(super) fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             }
         })),
         inbox: Some(inbox),
+        save_recovery: Some(save_recovery),
+        status_inbox: Some(status),
         ..Default::default()
     }
 }
@@ -71,7 +98,8 @@ fn mime_for(name: &str) -> &'static str {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("pdf") => "application/pdf",
-        Some("designcraft") => "application/json",
+        Some("designcraft") => "application/vnd.designcraft+zip",
+        Some("tei" | "xml") => "application/tei+xml",
         Some("idml") => "application/vnd.adobe.indesign-idml-package",
         _ => "application/octet-stream",
     }

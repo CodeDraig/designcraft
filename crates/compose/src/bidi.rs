@@ -7,7 +7,7 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
     let mut direction = D::Default;
     let mut previous: Option<(usize, usize, usize)> = None;
     for g in glyphs {
-        if g.len == 0
+        if (g.len == 0 || g.generated.as_ref().is_some_and(|v| v.text.is_none()))
             && let Some((byte, start, end)) = previous
             && byte == g.byte
         {
@@ -27,12 +27,18 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
             }
         }
         g.bidi_offset = text.len();
-        if g.len > 0 && g.display_char == g.ch {
+        if let Some(generated) = &g.generated {
+            if g.display_char == g.ch {
+                text.push_str(generated.text.as_deref().unwrap_or(""));
+            } else {
+                text.push(g.display_char);
+            }
+        } else if g.len > 0 && g.display_char == g.ch {
             match source.get(g.byte..g.byte.saturating_add(g.len)) {
-                Some(s) => text.push_str(s),
+                Some(s) => text.extend(s.chars().filter(|c| *c != designcraft_doc::ANCHOR_MARK)),
                 None => text.push(g.display_char),
             }
-        } else {
+        } else if g.ch != designcraft_doc::ANCHOR_MARK {
             text.push(g.display_char);
         }
         g.bidi_end = text.len();
@@ -49,7 +55,8 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
 pub fn resolve_mirroring(glyphs: &mut [Glyph], info: &unicode_bidi::BidiInfo<'_>) {
     for i in 0..glyphs.len() {
         let g = &glyphs[i];
-        if g.len != g.display_char.len_utf8() || glyphs.get(i + 1).is_some_and(|next| next.byte == g.byte) {
+        let cluster_len = g.generated.as_ref().map_or(g.len, |v| v.text.as_ref().map_or(0, |s| s.len()));
+        if cluster_len != g.display_char.len_utf8() || glyphs.get(i + 1).is_some_and(|next| next.bidi_offset == g.bidi_offset) {
             continue;
         }
         let rtl = info.levels.get(g.bidi_offset).is_some_and(|l| l.is_rtl());

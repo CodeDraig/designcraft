@@ -13,6 +13,7 @@ pub mod export;
 mod package;
 mod rtf;
 pub mod tagged;
+pub mod tei;
 mod xlsx;
 mod xml;
 
@@ -42,6 +43,8 @@ pub struct ImportedStyle {
 /// The imported text.
 #[derive(Clone, Debug)]
 pub struct Imported {
+    /// TEI preservation and document-level attachments; absent for other importers.
+    pub tei: Option<tei::Payload>,
     pub story: Story,
     pub para_styles: Vec<ImportedStyle>,
     pub char_styles: Vec<ImportedStyle>,
@@ -67,12 +70,22 @@ impl std::fmt::Display for ImportError {
 /// Text files this crate reads, by extension.
 pub fn is_text_file(name: &str) -> bool {
     let l = name.to_ascii_lowercase();
-    l.ends_with(".txt") || l.ends_with(".text") || l.ends_with(".md") || l.ends_with(".docx") || l.ends_with(".rtf") || l.ends_with(".xlsx")
+    l.ends_with(".tei")
+        || l.ends_with(".xml")
+        || l.ends_with(".txt")
+        || l.ends_with(".text")
+        || l.ends_with(".md")
+        || l.ends_with(".docx")
+        || l.ends_with(".rtf")
+        || l.ends_with(".xlsx")
 }
 
 /// Import `bytes` (format from the file name, else sniffed).
 pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
     let l = name.to_ascii_lowercase();
+    if tei::is_tei(bytes) || l.ends_with(".tei") || l.ends_with(".xml") {
+        return tei::import(name, bytes, &Default::default());
+    }
     if l.ends_with(".xlsx") {
         return xlsx::import(bytes);
     }
@@ -95,7 +108,7 @@ pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
 pub fn plain(text: &str) -> Imported {
     let t = text.trim_start_matches('\u{FEFF}').replace("\r\n", "\n").replace('\r', "\n");
     let story = Story::with_text(designcraft_doc::StoryId(0), &t, Default::default());
-    Imported { story, para_styles: vec![], char_styles: vec![], warnings: vec![] }
+    Imported { tei: None, story, para_styles: vec![], char_styles: vec![], warnings: vec![] }
 }
 
 #[cfg(test)]

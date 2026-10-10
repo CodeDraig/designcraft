@@ -56,7 +56,7 @@ see `ui_inspect` → `canvasRect`).
 | `get_story` | Text, frames, paragraphs, lines, overset of a story (`story` or text `frame`) |
 | `set_story_text` | Replace a story's text (`\n` = new paragraph) |
 | `new_document` | `file.new` (preset, width, height, pages, facingPages, columns, gutter, margins, bleed, title) or `sample: true` |
-| `open_document` / `save_document` | Native `.designcraft` files |
+| `open_document` / `save_document` | Open native, IDML or TEI; save as native `.designcraft` |
 | `place_image` | Image from `path` or `base64` into `frame`, the selected frame, or a new frame at x, y, width |
 | `render_page` | Render a page → MCP image content (PNG, base64); optional `path` to also save it |
 | `export_png` | Write a page as PNG (or JPEG by extension) |
@@ -96,3 +96,12 @@ key        {"key": "Escape"}
 ## Community links
 
 `app.links` returns the ArtCraft Discord (https://discord.gg/artcraft), the website (https://getartcraft.com), DesignCraft's app page (https://getartcraft.com/apps/designcraft), its GitHub repository (https://github.com/storytold/designcraft) and the issue tracker. In the running app, the UI commands `help.discord`, `help.appPage`, `help.github`, `help.issues`, `help.website`, `help.app {app}` open them in the browser and `help.about {tab?}` shows the About window (tabs `about`, `contributors`, `models`). The server's `serverInfo.websiteUrl` is the app page.
+
+## TEI books
+
+Use `execute` with `file.openTei`, `file.place`, `tei.inspect`, `tei.report` or
+`tei.source` for the complete engine import workflow. TEI witness selection,
+resource mappings and style choices are command parameters; they require no UI.
+Connected sessions can also call `app.teiImport`, `app.teiReport` and
+`app.teiSource` to operate the dialogs and source-download action. See
+[TEI book import](tei.md) for the exact parameters and native-format compatibility.

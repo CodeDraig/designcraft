@@ -50,6 +50,13 @@ Headless window screenshots (locked screen, hidden window): `cargo run -p design
 
 The MCP server (`designcraft-cli mcp`) wraps the same methods for Claude and other agents.
 
+TEI books use `file.openTei`, `file.open`/`file.openBytes`, and `file.place` through
+`engine.execute`. `tei.inspect` previews import choices, `tei.report` returns the
+stored receipt, and `tei.source` returns the unchanged source as base64. UI actions
+are `app.teiImport`, `app.teiReport`, and `app.teiSource`. See [TEI book import](tei.md)
+for options, resource mappings, preservation and limits. Use native paths for
+inputs that would exceed the 4 MiB request-line limit.
+
 ### Threading text frames
 
 `frame.thread` connects the last frame of a source story to the first frame of a destination story.

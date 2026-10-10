@@ -516,6 +516,8 @@ attr_set! {
         conditions: Vec<String> = Vec::new(),
         /// Track Changes: text added or deleted while tracking (deleted text isn't laid out).
         change: ChangeMark = ChangeMark::None,
+        /// Persistent publication review identity; attribution lives in its review record.
+        change_id: u64 = 0,
         /// XML: the element this text is tagged with (Tags panel, inline).
         xml_tag: String = String::new(),
     }

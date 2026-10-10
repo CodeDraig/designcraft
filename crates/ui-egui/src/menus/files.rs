@@ -4,10 +4,14 @@ use super::{DesignApp, Value, json};
 
 /// Save by handing the serialized document to the host as a download (web).
 pub(super) fn download_document(app: &mut DesignApp) -> Result<Value, String> {
-    let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).ok_or("no document")?;
+    let name = app
+        .session
+        .active()
+        .map(|d| format!("{}.designcraft", d.doc.publication.as_ref().map_or(d.doc.title.as_str(), |v| &v.root.title)))
+        .ok_or("no document")?;
+    let revision = app.session.doc().map_err(|e| e.to_string())?.revision;
     download_copy(app, &name)?;
-    // Marks the document saved; on the web the engine doesn't touch a file system.
-    app.run("file.saveAs", json!({"path": name}))
+    app.run("file.markDownloaded", json!({"name":name,"revision":revision}))
 }
 
 /// A browser copy delivers bytes without changing the document's path or saved state.
@@ -74,19 +78,44 @@ pub(super) fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, Strin
     }
 }
 
+fn output_title(app: &DesignApp, p: &Value) -> String {
+    app.session
+        .active()
+        .map(|s| {
+            if let Some(v) = &s.doc.publication {
+                let id = designcraft_doc::EditionId(p.get("edition").and_then(Value::as_u64).unwrap_or(v.edition.0));
+                v.root.editions.get(&id).and_then(|e| e.output.title.clone()).unwrap_or_else(|| v.root.title.clone())
+            } else {
+                s.doc.title.clone()
+            }
+        })
+        .unwrap_or_else(|| "Untitled".into())
+}
+fn report_export(app: &mut DesignApp, result: &Value) {
+    if app.session.active().is_some_and(|s| s.doc.publication.is_some()) || result["warnings"].as_array().is_some_and(|w| !w.is_empty()) {
+        let mut fields = result.clone();
+        fields["mode"] = json!("exportReport");
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("publication", fields));
+    }
+    app.status(format!("Exported {}", result["path"].as_str().unwrap_or("document")));
+}
+
 /// Export EPUB / Text: ask for a path (default extension `ext`), run `cmd` without one and write
 /// what it returns (`base64` or `text`) with the platform writer.
 pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<Value, String> {
-    let st = app.session.active().ok_or("no document")?;
+    app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
-            let name = format!("{}.{ext}", st.doc.title);
+            let name = format!("{}.{ext}", output_title(app, p));
             app.services.pick_save.as_mut().and_then(|f| f(&name))
         }
     };
     let Some(path) = path else { return Ok(Value::Null) };
-    let mut params = json!({});
+    let mut params = if p.is_object() { p.clone() } else { json!({}) };
+    if let Some(parameters) = params.as_object_mut() {
+        parameters.remove("path");
+    }
     if cmd == "file.exportText" {
         let txt = path.to_ascii_lowercase().ends_with(".txt");
         params["format"] = json!(if txt { "txt" } else { "rtf" });
@@ -96,20 +125,22 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
         Some(t) => t.as_bytes().to_vec(),
         None => designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default()),
     };
-    match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len()})),
-        None => Err("no writer".into()),
+    app.services.write.as_mut().ok_or("no writer")?(&path, &bytes)?;
+    let result = json!({"path":path,"bytes":bytes.len(),"warnings":r["warnings"],"pages":r["pages"]});
+    if cmd != "file.exportText" {
+        report_export(app, &result);
     }
+    Ok(result)
 }
 
 /// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
 /// platform writer (a download on the web).
 pub(super) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
-    let st = app.session.active().ok_or("no document")?;
+    app.session.active().ok_or("no document")?;
     let path = match p.get("path").and_then(Value::as_str) {
         Some(s) => Some(s.to_string()),
         None => {
-            let name = format!("{}.pdf", st.doc.title);
+            let name = format!("{}.pdf", output_title(app, p));
             app.services.pick_save.as_mut().and_then(|f| f(&name))
         }
     };
@@ -125,8 +156,8 @@ pub(super) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
     }
     let r = app.run("file.exportPdf", params)?;
     let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
-    match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "pages": r["pages"], "warnings": r["warnings"]})),
-        None => Err("no writer".into()),
-    }
+    app.services.write.as_mut().ok_or("no writer")?(&path, &bytes)?;
+    let result = json!({"path":path,"bytes":bytes.len(),"warnings":r["warnings"],"pages":r["pages"]});
+    report_export(app, &result);
+    Ok(result)
 }

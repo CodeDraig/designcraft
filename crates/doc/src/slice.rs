@@ -33,16 +33,19 @@ impl Story {
         let count = |m: char, upto: usize| self.text[..upto].matches(m).count();
         let span = |m: char| count(m, a)..count(m, b);
         out.notes = self.notes[span(FOOTNOTE_REF)].to_vec();
+        out.endnotes = self.endnotes[span(crate::ENDNOTE_REF)].to_vec();
+        out.editorial = self.editorial[span(crate::NOTE_MARK)].to_vec();
         out.anchors = self.anchors[span(ANCHOR_MARK)].to_vec();
         out.xrefs = self.xrefs[span(XREF_MARK)].to_vec();
         out.index_refs = self.index_refs[span(INDEX_MARK)].to_vec();
         out.objects = self.objects[span(crate::anchored::OBJECT_MARK)].to_vec();
-        for p in &out.paras {
+        let content = Arc::make_mut(&mut out.content);
+        for p in &content.paras {
             if let Some(id) = p.table
                 && let Some(t) = self.tables.get(&id)
-                && out.text.contains(TABLE_ANCHOR)
+                && content.text.contains(TABLE_ANCHOR)
             {
-                out.tables.insert(id, t.clone());
+                content.tables.insert(id, t.clone());
             }
         }
         out.fix_tables();
@@ -53,6 +56,16 @@ impl Story {
     /// pasted paragraph merges into the paragraph at `pos` (it keeps that paragraph's format, as
     /// in InDesign), later paragraphs keep their own formats. Returns the end of the insertion.
     pub fn insert_story(&mut self, pos: usize, src: &Story) -> usize {
+        self.insert_story_impl(pos, src, false)
+    }
+
+    /// Insert text whose identifiers have already been allocated for this document. Used by
+    /// import and generated endnotes; ordinary clipboard copies must use `insert_story`.
+    pub fn insert_story_preserving_anchors(&mut self, pos: usize, src: &Story) -> usize {
+        self.insert_story_impl(pos, src, true)
+    }
+
+    fn insert_story_impl(&mut self, pos: usize, src: &Story, preserve_anchors: bool) -> usize {
         let pos = crate::story::floor_char_boundary(&self.text, pos.min(self.len()));
         if src.text.is_empty() {
             return pos;
@@ -78,6 +91,8 @@ impl Story {
         let first = |m: char| self.text[..pos].matches(m).count();
         let (nf, nx, ni, na) = (first(FOOTNOTE_REF), first(XREF_MARK), first(INDEX_MARK), first(ANCHOR_MARK));
         let no = first(crate::anchored::OBJECT_MARK);
+        let ne = first(crate::ENDNOTE_REF);
+        let editorial = first(crate::NOTE_MARK);
         for (k, o) in src.objects.iter().enumerate() {
             if let Some(slot) = self.objects.get_mut(no + k) {
                 *slot = o.clone();
@@ -86,7 +101,19 @@ impl Story {
         for (k, n) in src.notes.iter().enumerate() {
             if let Some(slot) = self.notes.get_mut(nf + k) {
                 let id = slot.id;
-                *slot = Arc::new(crate::notes::Footnote { id, text: n.text.clone() });
+                *slot = Arc::new(crate::notes::Footnote { id, ..(**n).clone() });
+            }
+        }
+        for (k, n) in src.endnotes.iter().enumerate() {
+            if let Some(slot) = self.endnotes.get_mut(ne + k) {
+                let id = slot.id;
+                *slot = Arc::new(crate::notes::Footnote { id, ..(**n).clone() });
+            }
+        }
+        for (k, n) in src.editorial.iter().enumerate() {
+            if let Some(slot) = self.editorial.get_mut(editorial + k) {
+                let id = slot.id;
+                *slot = Arc::new(crate::EditorialNote { id, ..(**n).clone() });
             }
         }
         for (k, x) in src.xrefs.iter().enumerate() {
@@ -100,10 +127,28 @@ impl Story {
             }
         }
         // Anchors are new destinations (fresh ids) with the copied names.
+        let mut anchors = std::collections::BTreeMap::new();
         for (k, a) in src.anchors.iter().enumerate() {
             if let Some(slot) = self.anchors.get_mut(na + k) {
-                let id = slot.id;
+                let id = if preserve_anchors { a.id } else { slot.id };
+                anchors.insert(a.id, id);
                 *slot = Arc::new(crate::xref::TextAnchor { id, name: a.name.clone() });
+            }
+        }
+        for x in self.xrefs.iter_mut().skip(nx).take(src.xrefs.len()) {
+            if let Some(target) = anchors.get(&x.target) {
+                Arc::make_mut(x).target = *target;
+            }
+        }
+        let content = Arc::make_mut(&mut self.content);
+        for note in content.notes.iter_mut().skip(nf).take(src.notes.len()).chain(content.endnotes.iter_mut().skip(ne).take(src.endnotes.len())) {
+            if let Some(a) = &mut Arc::make_mut(note).apparatus {
+                if let Some(id) = anchors.get(&a.start) {
+                    a.start = *id;
+                }
+                if let Some(id) = anchors.get(&a.end) {
+                    a.end = *id;
+                }
             }
         }
         // Tables: re-attach by paragraph (fresh ids so a pasted copy never shares an id).
@@ -158,5 +203,26 @@ mod tests {
         assert_eq!(part.text, a.text[2..e]);
         assert_eq!(part.notes.len(), 1);
         assert!(a.extract(2..8).notes.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod imported_tests {
+    use super::*;
+    #[test]
+    fn slices_preserve_endnotes_and_retarget_internal_references() {
+        let mut src = Story::with_text(StoryId(1), "Heading\nParagraph", Default::default());
+        let anchor = src.insert_anchor(0, "Heading");
+        src.insert_xref(src.len(), crate::CrossRef { target: anchor, format: "Page Number".into(), field: None });
+        src.insert_endnote(src.len(), "First paragraph.\nSecond paragraph.", Default::default());
+        let extracted = src.extract(0..src.len());
+        extracted.check().unwrap();
+        assert_eq!(extracted.endnotes, src.endnotes);
+        let mut target = Story::new(StoryId(2));
+        target.insert_story(0, &extracted);
+        target.check().unwrap();
+        assert_ne!(target.anchors[0].id, anchor);
+        assert_eq!(target.xrefs[0].target, target.anchors[0].id);
+        assert_eq!(target.endnotes[0].text.text, "First paragraph.\nSecond paragraph.");
     }
 }

@@ -7,7 +7,16 @@ mod find_change;
 mod fitting;
 mod import_options;
 mod new_document;
+pub(crate) mod publication;
+mod publication_editions;
+mod publication_indexes;
+mod publication_layout;
+mod publication_notes;
+mod publication_references;
+mod publication_review;
+mod publication_settings;
 mod qr_code;
+pub(crate) mod tei;
 use dictionary::user_dictionary;
 mod shortcuts;
 use shortcuts::keyboard_shortcuts;
@@ -172,6 +181,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
+        "teiImport" => "Import TEI Book",
+        "teiReport" => "TEI Import Report",
+        "publication" => "Publication",
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
@@ -188,7 +200,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         },
     };
     egui::Modal::new(egui::Id::new("dialog")).show(ctx, |ui| {
-        ui.set_min_width(380.0);
+        ui.set_min_width(if matches!(d.id.as_str(), "teiImport" | "teiReport") { 560.0 } else { 380.0 });
         ui.set_max_width(if d.id == "newDocument" && crate::i18n::is_rtl(&app.ui.language) { 380.0 } else { 640.0 });
         if crate::i18n::is_rtl(&app.ui.language) {
             ui.horizontal(|ui| {
@@ -201,6 +213,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         }
         ui.add_space(10.0);
         match d.id.as_str() {
+            "publication" => publication::show(ui, &mut d),
             "closeDocument" => {
                 crate::rtl::label(ui, format!("{} “{}”?", crate::i18n::tr(&app.ui.language, "Save changes to"), d.s("title")));
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Discarding will lose the unsaved changes."));
@@ -294,6 +307,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 });
             }
             "importOptions" => import_options::show(app, ui, &mut d),
+            "teiImport" => tei::show(app, ui, &mut d),
+            "teiReport" => tei::report(app, ui, &d),
             "newWorkspace" => {
                 ui.horizontal(|ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name:"));
@@ -426,6 +441,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
     match d.id.as_str() {
+        "publication" => publication::confirm(app, &d),
+        "teiImport" => tei::confirm(app, &d),
+        "teiReport" => Ok(Value::Null),
         "closeDocument" => {
             let result = (|| {
                 let uid = d.fields.get("uid").and_then(Value::as_u64).ok_or("missing document identity")?;

@@ -27,9 +27,29 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{}", always, |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default())),
         cmd!(noundo "file.open", "Open…", ["File"], Some("Cmd+O"),
-            "{path} — .designcraft or .idml; the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped}",
+            "{path, tei?, resources?} — .designcraft, .idml, or TEI P5 book; TEI opens unsaved with preserved source; layout files load adjacent Document Fonts",
             always, file_open),
-        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — a .designcraft ZIP archive or an IDML package", always, file_open_bytes),
+        cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64, tei?, resources?} — a .designcraft archive, IDML package, or TEI P5 book", always, file_open_bytes),
+        cmd!(noundo "file.recoverBytes", "Recover Downloaded Document", [], None,
+        "{base64} — restore native recovery bytes as a new unsaved document/publication", always, |s,p| {
+            let bytes = super::tei::decoded(str_param(p,"base64").ok_or_else(||bad("file.recoverBytes","base64 required"))?,1024*1024*1024)?;
+            let d = from_bytes(&bytes)?;
+            let mut st = DocState::new(d,None);
+            st.saved_doc=Arc::new(Document::new(&Default::default()));
+            let index=s.add_document(st);
+            Ok(json!({"index":index}))
+        }),
+        cmd!(noundo "file.markDownloaded", "Mark Downloaded Document Saved", [], None,
+        "{revision, name} — acknowledge successful host delivery of exactly this revision", has_doc, |s,p| {
+            let revision=p.get("revision").and_then(Value::as_u64).ok_or_else(||bad("file.markDownloaded","revision required"))?;
+            let name=str_param(p,"name").ok_or_else(||bad("file.markDownloaded","name required"))?;
+            let st=s.doc_mut()?;
+            if st.revision!=revision { return Err(bad("file.markDownloaded","document changed during download; new edits remain unsaved")); }
+            st.saved_doc=st.doc.clone();
+            st.saved_revision=revision;
+            st.path=Some(name.into());
+            ok()
+        }),
         cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?}", has_doc, file_save),
         cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path}", has_doc, file_save),
         cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state", has_doc, |s, p| {
@@ -37,15 +57,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("file.saveACopy", "filesystem saving is unavailable on the web; use app.saveCopyDialog to download a copy"));
             }
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?.to_string();
-            let bytes = to_bytes(&s.doc()?.doc);
+            let bytes = designcraft_format::save(&s.doc()?.doc).map_err(|e| EngineError::Other(e.to_string()))?;
             #[cfg(not(target_arch = "wasm32"))]
-            std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            write_atomic(std::path::Path::new(&path), &bytes)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.revert", "Revert", ["File"], None, "{} — back to the last saved version (not undoable)", can_revert, file_revert),
         cmd!(query "file.recovery.list", "Recovery Data", [], None, "{dir?} → [{uid, path, title, saved}] unsaved documents left by a crash (default: the session's recovery folder)", always, |s, p| {
             let dir = recovery_dir(s, p)?;
             Ok(Value::Array(crate::recovery::list(&dir).into_iter().map(|(uid, mut m)| { m["uid"] = json!(uid); m }).collect()))
+        }),
+        cmd!(query "file.recovery.snapshots", "Recovery Snapshots", [], None, "{} → complete native archives for unsaved documents/publications", always, |s,_| {
+            Ok(json!(crate::recovery::snapshots(s)?.iter().map(|r|json!({"uid":r.uid,"title":r.title,"revision":r.revision,"base64":base64_encode(&r.bytes)})).collect::<Vec<_>>()))
         }),
         cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None, "{dir?} — write every unsaved document to the recovery folder (the app does this on a timer)", always, |s, p| {
             let dir = recovery_dir(s, p)?;
@@ -59,7 +82,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc()?;
             // Preview fill is session state. Serialize the unfilled template.
             let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
-            let bytes = to_bytes(doc);
+            let bytes = designcraft_format::save(doc).map_err(|e| EngineError::Other(e.to_string()))?;
             Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()}))
         }),
         cmd!(noundo "file.close", "Close", ["File"], Some("Cmd+W"), "{index?, discard?: false} — unsaved documents require an explicit discard: true", has_doc, |s, p| {
@@ -122,7 +145,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image (into the selected empty frame if any); text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?, pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|trim|bleed|art|media, layoutPage?: n (IDML / .designcraft: that page's objects as a group)} — places an image (into the selected empty frame if any); TEI P5 books (.tei, .xml with tei?: {witness?}, resources?: {URI: {path|base64}}), text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect` — {autoflow?: adds pages with threaded frames until the text fits, removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename}",
             has_doc,
             file_place
         ),
@@ -184,7 +207,14 @@ fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
         if path.to_ascii_lowercase().ends_with(".idml") {
             return super::interchange::open_idml(s, p);
         }
-        let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let bytes = if path.to_ascii_lowercase().ends_with(".tei") || path.to_ascii_lowercase().ends_with(".xml") {
+            super::tei::read_path(path, designcraft_textimport::tei::MAX_BYTES)?
+        } else {
+            std::fs::read(path).map_err(|e| EngineError::Other(e.to_string()))?
+        };
+        if designcraft_textimport::tei::is_tei(&bytes) || path.to_ascii_lowercase().ends_with(".tei") || path.to_ascii_lowercase().ends_with(".xml") {
+            return super::tei::open_bytes(s, p, std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path), &bytes);
+        }
         let mut d = from_bytes(&bytes)?;
         super::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
         let (fonts, faces, warnings) = load_document_fonts(&mut d, path);
@@ -221,14 +251,24 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
 }
 
 fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
+    if str_param(p, "name").is_some_and(|n| n.to_ascii_lowercase().ends_with(".tei") || n.to_ascii_lowercase().ends_with(".xml")) {
+        return super::tei::open(s, p);
+    }
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
+    if designcraft_textimport::tei::is_tei(&b)
+        || str_param(p, "name").is_some_and(|n| n.to_ascii_lowercase().ends_with(".tei") || n.to_ascii_lowercase().ends_with(".xml"))
+    {
+        return super::tei::open(s, p);
+    }
     // IDML packages are recognised by their stored `mimetype` first entry.
     if designcraft_idml::is_idml(&b) {
         return super::interchange::open_idml(s, p);
     }
     let mut d = from_bytes(&b)?;
     super::datamerge::resolve_sources_on_open(&mut d, None);
-    if let Some(n) = str_param(p, "name") {
+    if let Some(n) = str_param(p, "name")
+        && d.publication.is_none()
+    {
         d.title = n.to_string();
     }
     let i = s.add_document(DocState::new(d, None));
@@ -241,17 +281,17 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         .map(str::to_string)
         .or_else(|| st.path.clone())
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
-    {
-        let mut d = (*st.doc).clone();
-        super::datamerge::refresh_relative_paths(&mut d, std::path::Path::new(&path));
-        if d.data_merge != st.doc.data_merge {
-            st.doc = Arc::new(d);
-            st.revision = st.revision.saturating_add(1);
-        }
-    }
-    let bytes = to_bytes(&st.doc);
+    let mut candidate = (*st.doc).clone();
+    super::datamerge::refresh_relative_paths(&mut candidate, std::path::Path::new(&path));
+    candidate.sync_publication()?;
+    let changed = candidate != *st.doc;
+    let bytes = designcraft_format::save(&candidate).map_err(|e| EngineError::Other(e.to_string()))?;
     #[cfg(not(target_arch = "wasm32"))]
-    std::fs::write(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    write_atomic(std::path::Path::new(&path), &bytes)?;
+    if changed {
+        st.doc = Arc::new(candidate);
+        st.revision = st.revision.saturating_add(1);
+    }
     st.path = Some(path.clone());
     st.saved_revision = st.revision;
     st.saved_doc = st.doc.clone();
@@ -261,6 +301,32 @@ fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         crate::recovery::discard(dir, uid);
     }
     Ok(json!({"path": path, "bytes": bytes.len()}))
+}
+
+/// A new sibling file is flushed before replacing the destination. Failure before rename keeps
+/// the previous archive, and a failed save never advances the session's saved snapshot.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name().ok_or_else(|| bad("file.save", "destination needs a filename"))?;
+    let mut filename = name.to_os_string();
+    filename.push(format!(".dc-save-{}-{}", std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)));
+    let temporary = parent.join(filename);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|e| EngineError::Other(format!("{}: {e}", temporary.display())))?;
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
+    drop(file);
+    let result = result.and_then(|_| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))
 }
 
 fn recovery_dir(s: &Session, p: &Value) -> Result<std::path::PathBuf> {

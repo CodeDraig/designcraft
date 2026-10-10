@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TEI xmlns="http://www.tei-c.org/ns/1.0" xml:lang="en">
+  <teiHeader><fileDesc>
+    <titleStmt><title>The Two Witnesses</title><author>DesignCraft test authors</author></titleStmt>
+    <publicationStmt><p>Original synthetic acceptance text, MIT OR Apache-2.0.</p></publicationStmt>
+    <sourceDesc><p>A test of independent annotation streams and preserved readings.</p></sourceDesc>
+  </fileDesc><encodingDesc><listWit>
+    <witness xml:id="A">First manuscript</witness><witness xml:id="B">Second manuscript</witness>
+  </listWit></encodingDesc></teiHeader>
+  <text><body><div xml:id="chapter"><head>Reading the Orchard</head>
+    <p>The keeper carried a <app xml:id="colour"><lem wit="#A">red</lem><rdg wit="#B"><hi rend="italic">blue</hi></rdg></app> book.
+      <note xml:id="source-note"><p>A <hi rend="italic">source note</hi> with two paragraphs.</p><p>The second paragraph includes <ref target="#chapter">a return to the chapter</ref> and <ref target="https://tei-c.org/">an external reference</ref>.</p></note>
+      The day was <app xml:id="weather"><lem wit="#A">clear</lem><rdg wit="#B">cloudy</rdg></app>.</p>
+    <p>Two records disagree.<note xml:id="table-note"><p>Recorded harvests:</p><table><row role="label"><cell>Witness</cell><cell>Count</cell></row><row><cell>A</cell><cell>12</cell></row><row><cell>B</cell><cell>14</cell></row></table><p>The totals retain their table structure.</p></note></p>
+    <p>A plan survives.<note xml:id="figure-note"><p>The picture belongs to this note.</p><figure><graphic url="orchard.svg" width="90pt"/><figDesc>Three trees and a gate.</figDesc></figure><p>A caption follows the picture.</p></note></p>
+    <p>An editor adds a comment.<note place="end"><p>The editorial ending remains <hi rend="bold">editable</hi>.</p><p>Its second paragraph must survive placement changes.</p></note></p>
+  </div></body></text>
+</TEI>

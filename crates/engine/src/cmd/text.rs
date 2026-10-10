@@ -114,10 +114,13 @@ pub fn specs() -> Vec<CommandSpec> {
                 let a = p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize;
                 let b = p.get("end").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(a);
                 let text = str_param(p, "text").unwrap_or("").to_string();
+                let tracking = super::changes::tracking(&s.doc()?.doc);
                 s.edit(|d, sel| {
                     let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
                     let (a, b) = (a.min(st.len()), b.min(st.len()).max(a.min(st.len())));
-                    st.replace(a..b, &text);
+                    let a = floor_char_boundary(&st.text, a);
+                    let b = floor_char_boundary(&st.text, b);
+                    super::changes::replace(st, a..b, &text, tracking);
                     let len = st.len();
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
                         t.anchor = floor_char_boundary(&st.text, t.anchor);

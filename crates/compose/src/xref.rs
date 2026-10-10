@@ -15,7 +15,28 @@ pub struct XrefIndex {
 }
 
 pub fn has_xrefs(st: &Story) -> bool {
-    !st.xrefs.is_empty()
+    let mut pending = vec![st];
+    while let Some(s) = pending.pop() {
+        if !s.xrefs.is_empty() {
+            return true;
+        }
+        pending.extend(s.tables.values().flat_map(|t| t.cells.iter()).map(|c| &c.text));
+        pending.extend(s.notes.iter().chain(&s.endnotes).map(|n| &n.text));
+    }
+    false
+}
+
+/// Publication fields already carry resolved rich values; only legacy fields need this index.
+pub(crate) fn needs_index(st: &Story) -> bool {
+    let mut pending = vec![st];
+    while let Some(s) = pending.pop() {
+        if s.xrefs.iter().any(|x| x.field.is_none()) {
+            return true;
+        }
+        pending.extend(s.tables.values().flat_map(|t| t.cells.iter()).map(|c| &c.text));
+        pending.extend(s.notes.iter().chain(&s.endnotes).map(|n| &n.text));
+    }
+    false
 }
 
 impl XrefIndex {
@@ -25,7 +46,11 @@ impl XrefIndex {
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> XrefIndex {
         let mut pages = HashMap::new();
         for (sid, st) in &doc.stories {
-            if st.anchors.is_empty() {
+            if st.anchors.is_empty()
+                && st.tables.is_empty()
+                && st.notes.is_empty()
+                && doc.publication.as_ref().is_none_or(|v| v.root.note_output(v.component, *sid).is_none())
+            {
                 continue;
             }
             let cs = if has_xrefs(st) || crate::vars::has_running(doc, st) {
@@ -33,12 +58,33 @@ impl XrefIndex {
             } else {
                 get(*sid)
             };
-            for a in &st.anchors {
-                let Some(pos) = st.anchor_pos(a.id) else { continue };
-                if let Some((page, ..)) = crate::vars::place(doc, &cs, pos) {
-                    pages.insert(a.id, (page, doc.page_name(page)));
+            fn collect(doc: &Document, st: &Story, cs: &ComposedStory, parent_page: Option<usize>, pages: &mut HashMap<u64, (usize, String)>) {
+                for ft in &cs.frames {
+                    let Some(page) = parent_page.or_else(|| doc.page_of_item(ft.frame)) else { continue };
+                    for a in &st.anchors {
+                        if let Some(pos) = st.anchor_pos(a.id)
+                            && ft.range.contains(&pos)
+                        {
+                            pages.entry(a.id).or_insert_with(|| (page, doc.page_name(page)));
+                        }
+                    }
+                    for fragment in &ft.tables {
+                        if let Some(table) = st.tables.get(&fragment.table) {
+                            for cell in &fragment.cells {
+                                if let Some(source) = table.cell(cell.row, cell.col) {
+                                    collect(doc, &source.text, &cell.text, Some(page), pages);
+                                }
+                            }
+                        }
+                    }
+                    for note in &ft.notes {
+                        if let Some(source) = note.source_story.as_deref().or_else(|| st.notes.get(note.index).map(|n| &n.text)) {
+                            collect(doc, source, &note.text, Some(page), pages);
+                        }
+                    }
                 }
             }
+            collect(doc, st, &cs, None, &mut pages);
         }
         XrefIndex { pages }
     }
@@ -57,6 +103,9 @@ impl XrefIndex {
 /// The text a cross-reference shows ("??" when its destination is gone, like an unresolved
 /// reference in typesetting).
 pub fn xref_text(doc: &Document, x: &xref::CrossRef, index: Option<&XrefIndex>) -> String {
+    if let Some(id) = x.field {
+        return doc.publication_field(id, None).plain();
+    }
     let Some(mut v) = doc.xref_values(x.target) else { return "??".into() };
     v.page = index.and_then(|i| i.page(x.target)).unwrap_or("?").to_string();
     let def = doc.xref_format(&x.format).map_or("<fullPara />", |f| f.definition.as_str());
@@ -76,4 +125,22 @@ pub fn texts_in(doc: &Document, story: &Story, range: std::ops::Range<usize>, in
         }
     }
     out
+}
+
+/// Rich generated fields retain their binding while shaped through normal line breaking.
+pub fn rich_texts_in(
+    doc: &Document,
+    story: &Story,
+    range: std::ops::Range<usize>,
+    page: Option<usize>,
+) -> HashMap<usize, designcraft_doc::publication::references::FieldText> {
+    let before = story.text.get(..range.start).unwrap_or("").matches(XREF_MARK).count();
+    story
+        .text
+        .get(range.clone())
+        .unwrap_or("")
+        .match_indices(XREF_MARK)
+        .enumerate()
+        .filter_map(|(k, (i, _))| story.xrefs.get(before + k)?.field.map(|id| (range.start + i, doc.publication_field(id, page))))
+        .collect()
 }

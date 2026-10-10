@@ -34,6 +34,17 @@ pub enum VarKind {
     Custom {
         text: String,
     },
+    PublicationValue {
+        key: String,
+        #[serde(default)]
+        metadata: bool,
+    },
+    PublicationNumber {
+        sequence: String,
+        /// Omitted for the current chapter's number.
+        #[serde(default)]
+        object: Option<crate::SemanticId>,
+    },
     /// The last page number of the document (or of the section).
     LastPageNumber {
         #[serde(default)]
@@ -172,6 +183,24 @@ impl Document {
         let v = self.text_variables.get(i)?;
         let body = match &v.kind {
             VarKind::Custom { text } => text.clone(),
+            VarKind::PublicationValue { key, metadata } => self
+                .publication
+                .as_ref()
+                .and_then(|v| if *metadata { v.root.metadata.get(key) } else { v.root.values.get(key) })
+                .cloned()
+                .unwrap_or_else(|| format!("[Missing publication value: {key}]")),
+            VarKind::PublicationNumber { sequence, object } => self
+                .publication
+                .as_ref()
+                .and_then(|v| {
+                    v.root.numbers(sequence).ok().and_then(|numbers| {
+                        numbers
+                            .into_iter()
+                            .find(|n| n.resolved && n.object == *object && (object.is_some() || n.component == v.component))
+                            .map(|n| n.label)
+                    })
+                })
+                .unwrap_or_else(|| format!("[Unresolved number: {sequence}]")),
             VarKind::LastPageNumber { section } => {
                 let n = self.page_count();
                 if n == 0 {

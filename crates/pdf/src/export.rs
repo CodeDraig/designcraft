@@ -1,5 +1,7 @@
 //! Document → PDF. The item walk mirrors `designcraft-render`'s `draw_spread` / `draw_item`.
 
+mod publication;
+pub use publication::{PublicationNavigation, navigation_documents};
 mod sheets;
 pub use sheets::sheet_spreads;
 use sheets::sheets;
@@ -44,7 +46,14 @@ pub fn export_pdf(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<Ve
 
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
 pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
-    let sheets = sheets(doc, opts)?;
+    export_documents_with_report(std::slice::from_ref(doc), cache, opts)
+}
+
+/// Write all components into one PDF with a shared destination table. Page selections are
+/// publication positions; components remain in publication reading order.
+pub fn export_documents_with_report(documents: &[Document], cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
+    let doc = documents.first().ok_or(PdfError::NoPages)?;
+    let pages = publication::PublicationSheets::new(documents, cache, opts)?;
     let warnings = Vec::new();
     let (version, archival) = match opts.standard {
         Standard::None => (PdfVersion::Pdf17, None),
@@ -59,7 +68,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..Default::default() };
     let mut pdf = krilla::Document::new_with(settings);
 
-    let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
+    let title = opts.title.clone().unwrap_or_else(|| doc.publication.as_ref().map_or(&doc.title, |v| &v.root.title).clone());
     let mut meta = Metadata::new().creator("DesignCraft".into()).producer("DesignCraft".into());
     if !title.is_empty() {
         meta = meta.title(title.clone());
@@ -84,7 +93,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     pdf.set_metadata(meta);
 
     let mut ex = Exporter {
-        doc,
+        doc: DocumentContext::Borrowed(doc),
         cache,
         opts,
         clip: Rect::ZERO,
@@ -105,45 +114,66 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
     if ex.rgb_only {
         ex.warn("PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)");
     }
-    if let Some(o) = crate::links::outline(doc, &sheets) {
+    if let Some(o) = pages.outline(cache) {
         pdf.set_outline(o);
     }
-    for (sheet_idx, sh) in sheets.iter().enumerate() {
-        let size = Size::from_wh(sh.media.width().max(1.0) as f32, sh.media.height().max(1.0) as f32).ok_or(PdfError::NoPages)?;
-        let local = |r: Rect| {
-            krilla::geom::Rect::from_ltrb(
-                (r.x0 - sh.media.x0) as f32,
-                (r.y0 - sh.media.y0) as f32,
-                (r.x1 - sh.media.x0) as f32,
-                (r.y1 - sh.media.y0) as f32,
-            )
-        };
-        let settings = PageSettings::new(size).with_trim_box(local(sh.trim)).with_bleed_box(local(sh.bleed));
-        let mut page = pdf.start_page_with(settings);
-        let mut s = page.surface();
-        s.push_transform(&tf(Affine::translate(-sh.media.origin().to_vec2())));
-        ex.clip = sh.bleed;
-        if let Some(clip) = to_path(&sh.bleed.to_path(0.1)) {
-            s.push_clip_path(&clip, &FillRule::NonZero);
-            ex.spread(&mut s, sh.spread);
+    let mut tags = TagTree::new();
+    for (part, doc) in documents.iter().enumerate() {
+        ex.doc = DocumentContext::Borrowed(doc);
+        let sheets = &pages.sheets[part];
+        for (sheet_idx, sh) in sheets.iter().enumerate() {
+            let size = Size::from_wh(sh.media.width().max(1.0) as f32, sh.media.height().max(1.0) as f32).ok_or(PdfError::NoPages)?;
+            let local = |r: Rect| {
+                krilla::geom::Rect::from_ltrb(
+                    (r.x0 - sh.media.x0) as f32,
+                    (r.y0 - sh.media.y0) as f32,
+                    (r.x1 - sh.media.x0) as f32,
+                    (r.y1 - sh.media.y0) as f32,
+                )
+            };
+            let settings = PageSettings::new(size).with_trim_box(local(sh.trim)).with_bleed_box(local(sh.bleed));
+            let mut page = pdf.start_page_with(settings);
+            let mut s = page.surface();
+            s.push_transform(&tf(Affine::translate(-sh.media.origin().to_vec2())));
+            ex.clip = sh.bleed;
+            if let Some(clip) = to_path(&sh.bleed.to_path(0.1)) {
+                s.push_clip_path(&clip, &FillRule::NonZero);
+                ex.spread(&mut s, sh.spread);
+                s.pop();
+            }
+            if opts.tagged {
+                s.start_tagged(ContentTag::Artifact(Artifact::new(ArtifactType::Page, None)));
+            }
+            ex.marks(&mut s, sh, &title, created);
+            if opts.tagged {
+                s.end_tagged();
+            }
             s.pop();
+            s.finish();
+            for a in crate::links::annotations_mapped(
+                doc,
+                cache,
+                sheets,
+                sheet_idx,
+                &|owner, p| pages.part(owner, part).and_then(|part| pages.page(part, p)),
+                &|owner, id| pages.part(owner, part).and_then(|part| pages.anchor(part, id)),
+                &|id| pages.entity(part, id),
+                &mut ex.warnings,
+            ) {
+                if let Some(a) = a.annotation() {
+                    page.add_annotation(a);
+                }
+            }
+            page.finish();
         }
         if opts.tagged {
-            s.start_tagged(ContentTag::Artifact(Artifact::new(ArtifactType::Page, None)));
+            for group in ex.tag_groups() {
+                tags.push(group);
+            }
         }
-        ex.marks(&mut s, sh, &title, created);
-        if opts.tagged {
-            s.end_tagged();
-        }
-        s.pop();
-        s.finish();
-        for a in crate::links::annotations(doc, cache, &sheets, sheet_idx) {
-            page.add_annotation(a);
-        }
-        page.finish();
     }
     if opts.tagged {
-        pdf.set_tag_tree(ex.tag_tree());
+        pdf.set_tag_tree(tags);
     }
     ex.check_placed_versions()?;
     let mut bytes = pdf.finish().map_err(|e| PdfError::Write(format!("{e:?}")))?;
@@ -155,8 +185,25 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         crate::pdfx::cmyk_group_spaces(&mut bytes);
     }
     // Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X.
-    let fields = crate::forms::collect(doc, &sheets);
-    let media = if opts.media { crate::forms::collect_media(doc, &sheets) } else { Vec::new() };
+    let mut fields = Vec::new();
+    let mut media = Vec::new();
+    for (part, doc) in documents.iter().enumerate() {
+        let mut f = crate::forms::collect(doc, &pages.sheets[part]);
+        for (page, _, field) in &mut f {
+            *page += pages.offsets[part];
+            if documents.len() > 1 {
+                field.name = format!("component-{part}.{}", field.name);
+            }
+        }
+        fields.extend(f);
+        if opts.media {
+            let mut m = crate::forms::collect_media(doc, &pages.sheets[part]);
+            for (page, ..) in &mut m {
+                *page += pages.offsets[part];
+            }
+            media.extend(m);
+        }
+    }
     if !fields.is_empty() || !media.is_empty() {
         if opts.standard == Standard::PdfX4 {
             warnings.push("PDF/X-4: form fields and media were left out".into());
@@ -178,7 +225,7 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
         }
     }
     warnings.dedup();
-    Ok(ExportReport { bytes, pages: sheets.len(), warnings })
+    Ok(ExportReport { bytes, pages: pages.count, warnings })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -207,22 +254,37 @@ pub(crate) fn civil(t: i64) -> (i64, u8, u8, u8, u8, u8) {
     (year, month as u8, day as u8, (secs / 3600) as u8, (secs / 60 % 60) as u8, (secs % 60) as u8)
 }
 
+#[derive(Clone)]
+pub(crate) enum DocumentContext<'a> {
+    Borrowed(&'a Document),
+    Composed(Arc<Document>),
+}
+impl std::ops::Deref for DocumentContext<'_> {
+    type Target = Document;
+    fn deref(&self) -> &Document {
+        match self {
+            Self::Borrowed(d) => d,
+            Self::Composed(d) => d,
+        }
+    }
+}
+
 pub(crate) struct Exporter<'a> {
-    pub doc: &'a Document,
+    pub doc: DocumentContext<'a>,
     pub cache: &'a Cache,
     pub opts: &'a PdfOptions,
     /// Current sheet's visible area (spread space) for culling.
     pub clip: Rect,
     pub warnings: Vec<String>,
-    images: HashMap<AssetId, Option<Image>>,
+    images: HashMap<(usize, u32), Option<Image>>,
     /// Placed PDFs (embedded as vector pages).
-    pdfs: HashMap<AssetId, Option<krilla::pdf::PdfDocument>>,
+    pdfs: HashMap<(usize, u32), Option<krilla::pdf::PdfDocument>>,
     /// The PDF version written; placed PDFs must not be newer.
     version: PdfVersion,
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
     too_new: Vec<String>,
     /// Parsed placed SVGs.
-    svgs: HashMap<AssetId, Option<Arc<designcraft_images::usvg::Tree>>>,
+    svgs: HashMap<(usize, u32), Option<Arc<designcraft_images::usvg::Tree>>>,
     pub fonts: HashMap<u32, Option<krilla::text::Font>>,
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).

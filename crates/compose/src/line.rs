@@ -354,7 +354,7 @@ pub(super) fn layout_line(
             p.adv *= scale[i];
         }
         p.adv += add[i];
-        if let Some((_, l)) = kashidas.iter().find(|k| line[k.0].byte == g.byte) {
+        if let Some((_, l)) = kashidas.iter().find(|k| line[k.0].bidi_offset == g.bidi_offset) {
             // Move the whole cluster, including its attached marks, past the elongation.
             p.x += l;
         }
@@ -375,7 +375,7 @@ pub(super) fn layout_line(
         }
     }
     for (i, l) in kashidas {
-        let first = (0..=i).rev().take_while(|&j| line[j].byte == line[i].byte).last().unwrap_or(i);
+        let first = (0..=i).rev().take_while(|&j| line[j].bidi_offset == line[i].bidi_offset).last().unwrap_or(i);
         let (g, at) = (&line[i], out[first].x - line[first].dx - l);
         let gid = designcraft_fonts::first_glyph(&g.face, &['\u{0640}']);
         let w = g.face.advance(gid) * g.sx;
@@ -384,7 +384,18 @@ pub(super) fn layout_line(
         }
         // One tatweel stretched over the gap (overlapping its neighbours a little).
         let k = (l + 0.4) / w;
-        out.push(PlacedGlyph { gid, x: at - 0.2, y: -g.shift, adv: 0.0, sx: g.sx * k, len: 0, upright: false, tcy: None, ..place(g, at) });
+        out.push(PlacedGlyph {
+            gid,
+            x: at - 0.2,
+            y: -g.shift,
+            adv: 0.0,
+            sx: g.sx * k,
+            len: 0,
+            generated: None,
+            upright: false,
+            tcy: None,
+            ..place(g, at)
+        });
     }
     (out, x, ratio)
 }
@@ -419,7 +430,7 @@ fn kashida_points(line: &[Glyph]) -> Vec<usize> {
         // Only consider boundaries between complete clusters. Marks with len=0
         // are part of their base cluster, not word boundaries or insertion sites.
         let Some(n) = line.get(i + 1) else { continue };
-        if n.byte == g.byte || !g.allow_kashidas || !n.allow_kashidas || !n.safe_tatweel_before {
+        if n.bidi_offset == g.bidi_offset || !g.allow_kashidas || !n.allow_kashidas || !n.safe_tatweel_before {
             continue;
         }
         if g.face.id() != n.face.id() || g.face.glyph_for('\u{0640}') == 0 {
@@ -501,6 +512,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 style: tab.style,
                 byte: tab.byte,
                 len: 0,
+                generated: None,
                 visible: true,
                 upright: false,
                 tcy: None,
@@ -591,6 +603,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == story::INDENT_HERE
         || g.ch == story::RIGHT_INDENT_TAB
         || g.ch == story::TABLE_ANCHOR
+        || g.ch == designcraft_doc::ANCHOR_MARK
         || g.ch == shape::SOFT_HYPHEN
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
@@ -604,6 +617,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         style: g.style,
         byte: g.byte,
         len: g.len,
+        generated: g.generated.clone(),
         visible,
         upright: g.upright,
         tcy: g.tcy,

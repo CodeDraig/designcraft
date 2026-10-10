@@ -1,13 +1,14 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 mod files;
+mod recovery;
 use files::services;
 
 use designcraft_engine::Session;
-use designcraft_ui_egui::{DesignApp, Inbox};
+use designcraft_ui_egui::{DeliveredFiles, DesignApp, Inbox};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml"];
+const DOC_EXTS: &[&str] = &["designcraft", "idml", "tei", "xml"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -26,6 +27,8 @@ const IMAGE_EXTS: &[&str] = &[
     "rtf",
     "md",
     "xlsx",
+    "tei",
+    "xml",
     "idml",
     "designcraft",
 ];
@@ -89,18 +92,20 @@ struct WebShell {
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
-        for f in dropped {
+        if !dropped.is_empty() {
             let inbox = self.inbox.clone();
             let ctx = ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
-                match f.bytes_async().await {
-                    Ok(bytes) => {
-                        inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
-                        ctx.request_repaint();
+                let mut files = Vec::new();
+                for f in dropped {
+                    let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
+                    match f.bytes_async().await {
+                        Ok(bytes) => files.push((name, bytes)),
+                        Err(e) => log::error!("dropped file: {e}"),
                     }
-                    Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
                 }
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).push(DeliveredFiles { purpose: "drop".into(), files });
+                ctx.request_repaint();
             });
         }
         self.app.logic(ctx);

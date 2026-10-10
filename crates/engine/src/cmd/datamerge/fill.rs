@@ -307,6 +307,7 @@ fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, d
     let name = match &dest {
         HyperlinkDest::Url(u) | HyperlinkDest::Email(u) => u.clone(),
         HyperlinkDest::Page(p) => format!("Page {}", p + 1),
+        HyperlinkDest::Anchor(a) => format!("Anchor {a}"),
     };
     doc.hyperlinks.push(Hyperlink { id, name, source, dest });
     true

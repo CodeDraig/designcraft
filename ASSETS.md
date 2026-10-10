@@ -60,3 +60,7 @@ Generated-in-code art is original and has no file to list: the UI icon set (`cra
 | `docs/brand/artcraft-mark.svg`, `docs/brand/artcraft-mark.png` | ArtCraft / Storyteller | ArtCraft brand kit (project owner) | ArtCraft trademark, see docs/brand/LICENSE-brand.txt (not open source) | The mark; its outline is drawn in code by `crates/ui-egui/src/about.rs` (About splash, start screen) |
 | `docs/brand/artcraft-mark-black.svg`, `docs/brand/artcraft-mark-black.png` | ArtCraft / Storyteller | ArtCraft brand kit (project owner) | ArtCraft trademark, see docs/brand/LICENSE-brand.txt (not open source) | Mark for light backgrounds |
 | `docs/brand/LICENSE-brand.txt` | (licence text) | ArtCraft Team | — | Terms for the ArtCraft Marks in `docs/brand/` |
+
+| `crates/textimport/tests/fixtures/tei-book.xml` | DesignCraft contributors | Original synthetic TEI acceptance book | MIT OR Apache-2.0 | Prose, verse, drama, apparatus, notes, tables, links and image references |
+| `crates/textimport/tests/fixtures/orchard.svg` | DesignCraft contributors | Original geometric test illustration | MIT OR Apache-2.0 | Local and byte-mapped TEI illustration fixture |
+| `crates/textimport/tests/fixtures/tei-notes-apparatus.xml` | DesignCraft contributors | Original synthetic annotation acceptance text | MIT OR Apache-2.0 | Rich notes, tables, illustrations, links and two-witness apparatus |
